@@ -138,9 +138,31 @@ async def handle_build(event: GroupMessageEvent):
 # ---------------------------------------------------------------
 # /ti
 # ---------------------------------------------------------------
+# 阶段关键字 -> 生成器阶段名；空参数表示自动判断当前（最新）阶段
+_TI_STAGE_ALIASES = {
+    "小组赛": "swiss",
+    "swiss": "swiss",
+    "晋级赛": "elimination_round",
+    "加赛": "elimination_round",
+    "elimination": "elimination_round",
+    "正赛": "main_event",
+    "淘汰赛": "main_event",
+    "main": "main_event",
+    "playoff": "main_event",
+}
+
+
 @ti_cmd.handle()
-async def handle_ti():
-    if path := await service.ti_image():
+async def handle_ti(event: GroupMessageEvent):
+    args = _args(event)
+    if len(args) > 1:
+        await ti_cmd.finish("参数过多，请输入：/ti 或 /ti 小组赛|正赛")
+    stage = "auto"
+    if args:
+        stage = _TI_STAGE_ALIASES.get(args[0].strip().lower(), "")
+        if not stage:
+            await ti_cmd.finish("阶段参数无效，请输入：/ti 或 /ti 小组赛|正赛")
+    if path := await service.ti_image(stage):
         await ti_cmd.finish(MessageSegment.image(file=path))
     await ti_cmd.finish("查询失败，官网炸了")
 
@@ -166,19 +188,36 @@ async def handle_hero_pool(event: GroupMessageEvent):
 
 
 # ---------------------------------------------------------------
-# /订阅 新闻|ti：切换新闻/TI 订阅开关（管理员以上）
+# /订阅：查看订阅状态 / 切换或指定开、关新闻、TI 订阅（管理员以上）
 # ---------------------------------------------------------------
+_SUBSCRIBE_HINT = "请输入：/订阅、/订阅 新闻|ti、/订阅 新闻|ti 开|关"
+_SUBSCRIBE_KEYWORDS = {"新闻": "news", "news": "news", "ti": "ti", "赛事": "ti"}
+_ON_WORDS = {"开", "on", "开启", "1"}
+_OFF_WORDS = {"关", "off", "关闭", "0"}
+
+
 @subscribe_cmd.handle()
 async def handle_subscribe(event: GroupMessageEvent):
     args = _args(event)
-    if len(args) != 1:
-        await subscribe_cmd.finish("请输入：/订阅 新闻 或 /订阅 ti")
-    target = args[0].strip().lower()
-    if target in ("新闻", "news"):
-        await subscribe_cmd.finish(service.toggle_news_subscription(event.group_id))
-    if target in ("ti", "赛事"):
-        await subscribe_cmd.finish(service.toggle_ti_subscription(event.group_id))
-    await subscribe_cmd.finish("请输入：/订阅 新闻 或 /订阅 ti")
+    if not args:
+        # 无参数：仅查看全局总开关与本群订阅开关状态
+        await subscribe_cmd.finish(service.subscription_status(event.group_id))
+    if len(args) > 2:
+        await subscribe_cmd.finish(_SUBSCRIBE_HINT)
+    key = _SUBSCRIBE_KEYWORDS.get(args[0].strip().lower())
+    if key is None:
+        await subscribe_cmd.finish(_SUBSCRIBE_HINT)
+
+    # 可选的开关参数：省略时默认切换
+    if len(args) > 1:
+        raw = args[1].strip().lower()
+        if raw in _ON_WORDS:
+            await subscribe_cmd.finish(service.set_subscription(event.group_id, key, True))
+        if raw in _OFF_WORDS:
+            await subscribe_cmd.finish(service.set_subscription(event.group_id, key, False))
+        await subscribe_cmd.finish("开关参数无效，请输入 开 或 关")
+
+    await subscribe_cmd.finish(service.toggle_subscription(event.group_id, key))
 
 
 # ---------------------------------------------------------------
@@ -193,9 +232,10 @@ _HELP_TEXT = (
     "/d2pt [位置1-5]：D2PT 各位置胜率/线优数据\n"
     "/战报 [比赛编号]：生成开黑战报图片\n"
     "/出装 [英雄名] [位置1-5] [dark|light]：核心出装图\n"
-    "/ti：TI 赛事战报图片\n"
+    "/ti [小组赛|正赛]：TI 赛事战报图片（默认最新阶段）\n"
     "/英雄池 [steam_id 或 玩家昵称]：生成英雄池环形图\n"
-    "/订阅 新闻|ti：切换新闻/TI 订阅开关（管理员以上）"
+    "/订阅：查看订阅状态（总开关与本群开关）\n"
+    "/订阅 新闻|ti [开|关]：切换或指定开、关订阅（管理员以上）"
 )
 
 

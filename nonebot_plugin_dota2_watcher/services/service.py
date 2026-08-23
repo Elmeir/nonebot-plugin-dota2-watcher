@@ -85,18 +85,45 @@ def toggle_broadcast(group_id, player_name: str, display: bool) -> str:
     return reply or ""
 
 
-def toggle_news_subscription(group_id) -> str:
-    """切换本群的官方新闻订阅；返回提示文案。"""
-    enabled = store.toggle_news_subscription(str(group_id))
-    store.save()
-    return f"已{'开启' if enabled else '关闭'}官方新闻订阅"
+_ON, _OFF = "开", "关"
+
+# 订阅项：key -> (显示名, 本群存储字段, 全局总开关当前值)
+_SUBSCRIPTIONS = {
+    "news": ("官方新闻", "subscribe_news", config.d2w_news_enabled),
+    "ti": ("TI 赛事", "subscribe_ti", config.d2w_ti_enabled),
+}
 
 
-def toggle_ti_subscription(group_id) -> str:
-    """切换本群的 TI 赛事订阅；返回提示文案。"""
-    enabled = store.toggle_ti_subscription(str(group_id))
+def _state(v: bool) -> str:
+    """布尔开关值 -> '开'/'关'。"""
+    return _ON if v else _OFF
+
+
+def toggle_subscription(group_id, key: str) -> str:
+    """切换某类订阅开关，并返回含全部订阅状态的提示文案。"""
+    name = _SUBSCRIPTIONS[key][0]
+    enabled = store.toggle_subscription(str(group_id), key)
     store.save()
-    return f"已{'开启' if enabled else '关闭'}TI赛事订阅"
+    return f"已{'开启' if enabled else '关闭'}{name}订阅\n" + subscription_status(group_id)
+
+
+def set_subscription(group_id, key: str, enabled: bool) -> str:
+    """将某类订阅设为指定开关状态，并返回含全部订阅状态的提示文案。"""
+    name = _SUBSCRIPTIONS[key][0]
+    enabled = store.set_subscription(str(group_id), key, bool(enabled))
+    store.save()
+    return f"{name}订阅已{_state(enabled)}\n" + subscription_status(group_id)
+
+
+def subscription_status(group_id) -> str:
+    """查看全局总开关与本群订阅开关状态。"""
+    settings = store.get_group_settings(str(group_id))
+    lines = ["DOTA2 订阅状态："]
+    lines.extend(
+        f"{name}：{_state(global_on)} | 本群 {_state(settings.get(field, True))}"
+        for name, field, global_on in _SUBSCRIPTIONS.values()
+    )
+    return "\n".join(lines)
 
 
 async def d2pt_report(pos: str = "all") -> Message:
@@ -133,10 +160,13 @@ async def build_image(hero: str, position=None, theme: str = "light") -> str:
         return ""
 
 
-async def ti_image() -> str:
-    """生成 TI 赛事战报图片，返回本地路径；失败返回空串。"""
+async def ti_image(stage: str = "auto") -> str:
+    """生成 TI 赛事战报图片，返回本地路径；失败返回空串。
+
+    stage 取值 auto/swiss/elimination_round/main_event，传 auto 表示自动判断当前（最新）阶段。
+    """
     try:
-        result = await ti_results.generate_league_report_image()
+        result = await ti_results.generate_league_report_image(stage=stage)
         return result or ""
     except Exception:
         logger.exception("TI 战报生成失败")
@@ -257,6 +287,8 @@ async def _report_match(match: NewMatch) -> None:
 # ---------------------------------------------------------------
 async def poll_ti_results() -> None:
     """拉取最新 TI 赛果并广播。"""
+    if not store.any_group_subscribed("subscribe_ti"):
+        return
     try:
         msg = await ti_results.watch_latest_result(mode="game")
     except Exception:
@@ -268,6 +300,8 @@ async def poll_ti_results() -> None:
 async def poll_news() -> None:
     """监听 DOTA2 官方新闻，出现新头条时广播。"""
     global _last_news_title
+    if not store.any_group_subscribed("subscribe_news"):
+        return
     try:
         news = await request_news()
     except Exception:

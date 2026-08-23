@@ -19,23 +19,27 @@ from ..services import service
 # ---------------------------------------------------------------
 # TI 赛事结果监听
 # ---------------------------------------------------------------
-@scheduler.scheduled_job(
-    "interval", seconds=config.d2w_ti_poll_interval, coalesce=True, max_instances=1
-)
-async def watch_ti_results() -> None:
-    """拉取最新 TI 赛果并广播（定时任务）。"""
-    await service.poll_ti_results()
+if config.d2w_ti_enabled:
+
+    @scheduler.scheduled_job(
+        "interval", seconds=config.d2w_ti_poll_interval, coalesce=True, max_instances=1
+    )
+    async def watch_ti_results() -> None:
+        """拉取最新 TI 赛果并广播（定时任务）。"""
+        await service.poll_ti_results()
 
 
 # ---------------------------------------------------------------
 # DOTA2 官方新闻监听
 # ---------------------------------------------------------------
-@scheduler.scheduled_job(
-    "interval", seconds=config.d2w_news_poll_interval, coalesce=True, max_instances=1
-)
-async def watch_news() -> None:
-    """监听 DOTA2 官方新闻，出现新头条时广播。"""
-    await service.poll_news()
+if config.d2w_news_enabled:
+
+    @scheduler.scheduled_job(
+        "interval", seconds=config.d2w_news_poll_interval, coalesce=True, max_instances=1
+    )
+    async def watch_news() -> None:
+        """监听 DOTA2 官方新闻，出现新头条时广播。"""
+        await service.poll_news()
 
 
 # ---------------------------------------------------------------

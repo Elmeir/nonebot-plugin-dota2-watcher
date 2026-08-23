@@ -70,6 +70,8 @@ nonebot.run()
 | `D2W_GAME_MODE`                | 不播报的游戏模式列表                                                                   | `[15, 19]` |
 | `D2W_BENCHMARK_THRESHOLD`      | 评分标准（0\~1，仅 OpenDota 支持）                                                     | `0.5`      |
 | **定时任务**                     |                                                                              |            |
+| `D2W_TI_ENABLED`               | TI 赛事定时任务总开关；设为 `false` 时完全不注册、不轮询，零性能开销（彻底关闭）                            | `true`     |
+| `D2W_NEWS_ENABLED`             | 官方新闻定时任务总开关；设为 `false` 时完全不注册、不轮询，零性能开销（彻底关闭）                            | `true`     |
 | `D2W_TI_POLL_INTERVAL`         | TI 赛果轮询间隔（秒）                                                                 | `10`       |
 | `D2W_NEWS_POLL_INTERVAL`       | 新闻轮询间隔（秒）                                                                    | `60`       |
 | `D2W_MATCH_POLL_INTERVAL`      | 玩家比赛轮询间隔（秒）                                                                  | `60`       |
@@ -88,6 +90,8 @@ D2W_STEAM_API_KEY=你的Steam_Web_API_Key
 D2W_PROXIES={"http": "http://127.0.0.1:7890", "https": "http://127.0.0.1:7890"}
 D2W_GH_PROXY=https://gh-proxy.com
 D2W_TIMEOUT=20
+D2W_TI_ENABLED=true      # 可选：TI 赛事定时任务总开关，设 false 彻底关闭以省性能
+D2W_NEWS_ENABLED=true    # 可选：官方新闻定时任务总开关，设 false 彻底关闭以省性能
 LOCALSTORE_DATA_DIR=./data     # 可选：数据目录（订阅信息、持久缓存）
 LOCALSTORE_CACHE_DIR=./cache   # 可选：图片/战报等可再生缓存目录
 ```
@@ -106,10 +110,11 @@ LOCALSTORE_CACHE_DIR=./cache   # 可选：图片/战报等可再生缓存目录
 | `/d2pt [位置1-5]`                   | 查看 D2PT 胜率 / 线优数据        | 任意  |
 | `/战报 [比赛编号]`                      | 生成开黑战报图片                 | 任意  |
 | `/出装 [英雄名] [位置1-5] [dark\|light]` | 生成核心出装图片                 | 任意  |
-| `/ti`                             | 查看 TI 赛事战报图片             | 任意  |
+| `/ti [小组赛\|正赛]`                  | 查看 TI 赛事战报图片（默认自动判断最新阶段） | 任意  |
 | `/英雄池 [steam_id 或 玩家昵称] [min\|mid\|max 或 小\|中\|大]` | 生成玩家英雄池环形图（数量档位可选，默认 min/25 场） | 任意  |
-| `/订阅 新闻`                          | 开启 / 关闭官方新闻订阅            | 管理员 |
-| `/订阅 ti`                          | 开启 / 关闭 TI 赛事订阅          | 管理员 |
+| `/订阅`                            | 查看订阅状态（全局总开关与本群开关）        | 管理员 |
+| `/订阅 新闻 [开\|关]`                 | 切换或指定开、关官方新闻订阅并展示状态       | 管理员 |
+| `/订阅 ti [开\|关]`                   | 切换或指定开、关 TI 赛事订阅并展示状态      | 管理员 |
 
 > 示例：`/添加刀塔玩家 萧瑟先辈 898754153`、`/出装 敌法师 1 dark`、`/战报 1000000000`、`/英雄池 277774684`。
 

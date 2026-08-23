@@ -106,20 +106,32 @@ def get_group_settings(gid: str) -> dict:
     return load().setdefault(str(gid), _new_group())
 
 
-def toggle_news_subscription(gid: str) -> bool:
-    """切换某群的新闻订阅开关；返回切换后的状态。"""
+def toggle_subscription(gid: str, key: str) -> bool:
+    """切换某群某类订阅开关（key 为 "news"/"ti"）；返回切换后的状态。"""
+    field = f"subscribe_{key}"
     with _lock:
         info = get_group_settings(str(gid))
-        info["subscribe_news"] = not info.get("subscribe_news", True)
-        return info["subscribe_news"]
+        info[field] = not info.get(field, True)
+        return info[field]
 
 
-def toggle_ti_subscription(gid: str) -> bool:
-    """切换某群的 TI 赛事订阅开关；返回切换后的状态。"""
+def set_subscription(gid: str, key: str, enabled: bool) -> bool:
+    """将某群某类订阅设为指定开关状态（key 为 "news"/"ti"）；返回设置后的状态。"""
+    field = f"subscribe_{key}"
     with _lock:
         info = get_group_settings(str(gid))
-        info["subscribe_ti"] = not info.get("subscribe_ti", True)
-        return info["subscribe_ti"]
+        info[field] = bool(enabled)
+        return info[field]
+
+
+def any_group_subscribed(key: str) -> bool:
+    """是否存在任一群的订阅开关（如 "subscribe_ti"/"subscribe_news"）为开启状态。
+
+    用于定时任务在没有任何群订阅时直接跳过网络请求，避免无谓的性能消耗。
+    与 _broadcast 的过滤逻辑保持一致：缺失字段视为开启（默认 True）。
+    """
+    with _lock:
+        return any(info.get(key, True) for info in load().values())
 
 
 def upsert_player(gid: str, nickname: str, steam_id: int) -> str:

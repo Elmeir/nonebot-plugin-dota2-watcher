@@ -2604,12 +2604,21 @@ async def generate_elimination_round_image(output_path=None, data=None):
     )
 
 
-async def generate_league_report_image(output_path=None):
-    """战报图片统一入口：自动判断当前赛程阶段并生成对应图片（异步）。
+# 阶段名 -> (生成器函数, 阶段中文名)；用于指定阶段与自动判断的统一分派
+_STAGE_GENERATORS = {
+    "swiss": (generate_swiss_standings_image, "小组赛（瑞士轮）"),
+    "elimination_round": (generate_elimination_round_image, "瑞士轮晋级赛（Elimination Round）"),
+    "main_event": (generate_main_event_image, "国际邀请赛正赛"),
+}
 
-      · 小组赛（瑞士轮）         => generate_swiss_standings_image
-      · 瑞士轮晋级赛（Elimination Round） => generate_elimination_round_image
-      · 国际邀请赛正赛           => generate_main_event_image
+
+async def generate_league_report_image(output_path=None, stage=None):
+    """战报图片统一入口：按指定阶段生成对应图片；未指定时自动判断当前赛程阶段（异步）。
+
+      · stage=None/'auto'  自动判断当前阶段（最新阶段）
+      · stage='swiss'      小组赛（瑞士轮）
+      · stage='elimination_round'  瑞士轮晋级赛（Elimination Round）
+      · stage='main_event' 国际邀请赛正赛
 
     数据优先从本地缓存 data/dota2_ti.json 读取；本地无缓存时才回退到官方 API 抓取。
     返回生成图片的绝对路径；失败返回 None。
@@ -2617,15 +2626,12 @@ async def generate_league_report_image(output_path=None):
     data = await _league_data_cached_or_fetch()
     if not data:
         return None
-    stage = detect_league_stage(data.get("node_groups") or [])
-    if stage == "main_event":
-        print("[*] 当前赛程：国际邀请赛正赛，生成对阵图战报")
-        return await generate_main_event_image(output_path, data=data)
-    if stage == "elimination_round":
-        print("[*] 当前赛程：瑞士轮晋级赛（Elimination Round），生成晋级赛对阵图战报")
-        return await generate_elimination_round_image(output_path, data=data)
-    print("[*] 当前赛程：小组赛（瑞士轮），生成积分战报")
-    return await generate_swiss_standings_image(output_path, data=data)
+
+    explicit = stage in _STAGE_GENERATORS
+    resolved = stage if explicit else detect_league_stage(data.get("node_groups") or [])
+    generator, label = _STAGE_GENERATORS[resolved]
+    print(f"[*] {'指定阶段' if explicit else '当前赛程'}：{label}，生成战报")
+    return await generator(output_path, data=data)
 
 
 def main():

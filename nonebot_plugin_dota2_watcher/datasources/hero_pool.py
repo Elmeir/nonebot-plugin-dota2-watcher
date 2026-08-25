@@ -215,8 +215,8 @@ async def fetch_matches(
         "User-Agent": "stratz-hero-pool/0.1",
     }
 
-    def _load():
-        return _load_cache(cache_path, key, time.time(), max_age)
+    def _load(path):
+        return _load_cache(path, key, time.time(), max_age)
 
     async def _fetch():
         # 先抓 API；对限流(429/503)做退避重试

@@ -53,7 +53,7 @@ class Config(BaseModel):
 
     # ===================== 定时任务 =====================
     # 总开关：设为 false 时对应定时任务完全不注册、不轮询，零性能开销（彻底关闭）
-    d2w_ti_enabled: bool = True
+    d2w_ti_enabled: bool = False
     d2w_news_enabled: bool = True
     # 各定时任务轮询间隔（秒）
     d2w_ti_poll_interval: int = 10

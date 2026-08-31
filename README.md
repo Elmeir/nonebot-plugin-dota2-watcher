@@ -70,7 +70,7 @@ nonebot.run()
 | `D2W_GAME_MODE`                | 不播报的游戏模式列表                                                                   | `[15, 19]` |
 | `D2W_BENCHMARK_THRESHOLD`      | 评分标准（0\~1，仅 OpenDota 支持）                                                     | `0.5`      |
 | **定时任务**                     |                                                                              |            |
-| `D2W_TI_ENABLED`               | TI 赛事定时任务总开关；设为 `false` 时完全不注册、不轮询，零性能开销（彻底关闭）                            | `true`     |
+| `D2W_TI_ENABLED`               | TI 赛事定时任务总开关；设为 `false` 时完全不注册、不轮询，零性能开销（彻底关闭）                            | `false`    |
 | `D2W_NEWS_ENABLED`             | 官方新闻定时任务总开关；设为 `false` 时完全不注册、不轮询，零性能开销（彻底关闭）                            | `true`     |
 | `D2W_TI_POLL_INTERVAL`         | TI 赛果轮询间隔（秒）                                                                 | `10`       |
 | `D2W_NEWS_POLL_INTERVAL`       | 新闻轮询间隔（秒）                                                                    | `60`       |
@@ -90,8 +90,8 @@ D2W_STEAM_API_KEY=你的Steam_Web_API_Key
 D2W_PROXIES={"http": "http://127.0.0.1:7890", "https": "http://127.0.0.1:7890"}
 D2W_GH_PROXY=https://gh-proxy.com
 D2W_TIMEOUT=20
-D2W_TI_ENABLED=true      # 可选：TI 赛事定时任务总开关，设 false 彻底关闭以省性能
-D2W_NEWS_ENABLED=true    # 可选：官方新闻定时任务总开关，设 false 彻底关闭以省性能
+D2W_TI_ENABLED=false      # 可选：TI 赛事定时任务总开关（默认已关闭），设 true 开启
+D2W_NEWS_ENABLED=true     # 可选：官方新闻定时任务总开关，设 false 彻底关闭以省性能
 LOCALSTORE_DATA_DIR=./data     # 可选：数据目录（订阅信息、持久缓存）
 LOCALSTORE_CACHE_DIR=./cache   # 可选：图片/战报等可再生缓存目录
 ```

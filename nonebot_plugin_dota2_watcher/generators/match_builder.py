@@ -137,7 +137,7 @@ def check_performance(player_list: list, win: bool) -> bool:
         valid_players = 0
         for player in player_list:
             benchmarks = player.stats.get("benchmarks") or {}
-            # OpenDota 部分对局（如加速模式）不计入 benchmark 统计，pct 全为 null，需过滤
+            # OpenDota benchmark 炸咯，pct 全为 null，需过滤
             pcts = [
                 value.get("pct")
                 for name, value in benchmarks.items()

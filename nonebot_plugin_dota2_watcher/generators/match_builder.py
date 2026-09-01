@@ -148,7 +148,7 @@ def check_performance(player_list: list, win: bool) -> bool:
                 valid_players += 1
         if valid_players:
             return total_avg_pct / valid_players > config.d2w_benchmark_threshold
-        # pct 全为 null 时（如加速模式），退化为下方 KDA 判断
+        # pct 全为 null 时，退化为下方 KDA 判断
 
     top_kda = max(p.stats["kda"] for p in player_list)
     if (win and top_kda > 8) or (not win and top_kda > 6):

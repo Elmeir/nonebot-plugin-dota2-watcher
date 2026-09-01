@@ -134,16 +134,21 @@ def check_performance(player_list: list, win: bool) -> bool:
     benchmark = player_list[0].stats.get("benchmarks")
     if benchmark:
         total_avg_pct = 0.0
+        valid_players = 0
         for player in player_list:
             benchmarks = player.stats.get("benchmarks") or {}
+            # OpenDota 部分对局（如加速模式）不计入 benchmark 统计，pct 全为 null，需过滤
             pcts = [
-                value.get("pct", 0)
+                value.get("pct")
                 for name, value in benchmarks.items()
-                if name not in EXCLUDED_BENCHMARKS
+                if name not in EXCLUDED_BENCHMARKS and value.get("pct") is not None
             ]
             if pcts:
                 total_avg_pct += sum(pcts) / len(pcts)
-        return total_avg_pct / len(player_list) > config.d2w_benchmark_threshold
+                valid_players += 1
+        if valid_players:
+            return total_avg_pct / valid_players > config.d2w_benchmark_threshold
+        # pct 全为 null 时（如加速模式），退化为下方 KDA 判断
 
     top_kda = max(p.stats["kda"] for p in player_list)
     if (win and top_kda > 8) or (not win and top_kda > 6):

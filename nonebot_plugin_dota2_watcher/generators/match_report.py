@@ -21,12 +21,16 @@ from PIL import Image, ImageDraw, ImageFont
 # 所有目录 / URL / 超时等配置统一从 config.py 读取。
 if __package__:
     from .. import config as _cfg
+    from ..datasources.xiaoheihe import fetch_xiaoheihe_match
     from ..dota_dicts import GAME_MODE, LOBBY, REGION
-    from ..utils import download_file, dumpjson, get_http_client, loadjson
+    from ..utils import async_download_bytes, dumpjson, get_http_client, loadjson
 else:
     import config as _cfg
     from dota_dicts import GAME_MODE, LOBBY, REGION
-    from utils import download_file, dumpjson, get_http_client, loadjson
+    from utils import async_download_bytes, dumpjson, get_http_client, loadjson
+
+    # 独立脚本模式无插件包上下文，无法引入小黑盒数据源，跳过匿名数据补充
+    fetch_xiaoheihe_match = None
 
 WORK_DIR = str(_cfg.BASE_DIR)
 IMAGES_DIR = str(_cfg.IMAGES_DIR)
@@ -304,6 +308,36 @@ def draw_text_stroke(draw, pos, text, font, fill, stroke_fill, stroke_width=1):
                 continue
             draw.text((x + dx, y + dy), text, font=font, fill=stroke_fill)
     draw.text((x, y), text, font=font, fill=fill)
+
+
+# ============================================================
+# 职业选手认证徽章（OpenDota iconConfirmed 图标，金色圆 + 白色对勾）
+# ============================================================
+PRO_BADGE_URL = f"{_cfg.D2PT_REPO_BASE}/images/pro_badge.png"
+
+
+async def _ensure_pro_badge() -> bool:
+    """确保职业认证徽章 PNG 存在，只需下载一次。
+
+    查找顺序：运行缓存（images/other/pro_badge.png）→ 上游仓库网络下载
+    （d2pt_bot 仓库 images/pro_badge.png，经 gh-proxy 加速）。
+    全部失败时返回 False，战报降级为无徽章。
+    """
+    badge_path = image_path("pro_badge.png")
+    if os.path.exists(badge_path) and os.path.getsize(badge_path) > 100:
+        return True
+    try:
+        data = await async_download_bytes(PRO_BADGE_URL, timeout=_cfg.config.d2w_download_timeout)
+        if not data or len(data) <= 100:
+            logger.warning(f"职业认证徽章下载内容异常: {len(data or b'')} bytes")
+            return False
+        with open(badge_path, "wb") as f:
+            f.write(data)
+        logger.info(f"职业认证徽章已下载: {badge_path}")
+        return True
+    except Exception as e:
+        logger.warning(f"职业认证徽章下载失败（战报降级为无徽章）: {e}")
+    return False
 
 
 # ============================================================
@@ -679,17 +713,10 @@ async def init_images():
     async def download_one(name, url, path):
         nonlocal downloaded, failed
         try:
-            ok = await asyncio.to_thread(
-                download_file,
-                url,
-                path,
-                timeout=_cfg.config.d2w_download_timeout,
-                quiet=True,
-            )
-            if ok:
-                downloaded += 1
-            else:
-                failed += 1
+            body = await async_download_bytes(url, timeout=_cfg.config.d2w_download_timeout)
+            with open(path, "wb") as f:
+                f.write(body)
+            downloaded += 1
         except Exception:
             failed += 1
 
@@ -866,6 +893,54 @@ async def get_match(match_id, wait=True, timeout=None, force=False, match_data=N
 
 
 # ============================================================
+# 匿名玩家数据补充（小黑盒）
+# ============================================================
+async def _supplement_anonymous(match_id, match):
+    """用小黑盒数据补充 OpenDota 匿名玩家（无任何名字）的昵称与段位。
+
+    OpenDota 对隐私资料玩家拿不到昵称，战报中只能显示「匿名玩家」；
+    小黑盒对同一比赛的数据覆盖更全，可为这些玩家补回昵称（personaname），
+    缺段位（rank_tier）时一并补充。仅补充显示字段，不写入 name（职业名），
+    避免误加职业认证徽章。按 player_slot 匹配（与 Valve 槽位一致，最可靠），
+    account_id 兜底。补充成功后回写比赛缓存，后续渲染不再重复请求。
+    """
+    players = match.get("players") or []
+    anonymous = [p for p in players if not (p.get("name") or p.get("personaname"))]
+    if not anonymous:
+        return
+    if match.get("data_source") == "xiaoheihe":
+        return  # 数据本身来自小黑盒，无更全的补充来源
+    if fetch_xiaoheihe_match is None:
+        return
+    try:
+        xh = await fetch_xiaoheihe_match(match_id)
+    except Exception as e:
+        logger.warning(f"小黑盒匿名玩家数据补充失败（按原数据渲染）: {e}")
+        return
+    by_slot = {xp.get("player_slot"): xp for xp in xh.get("players") or []}
+    by_account = {
+        xp.get("account_id"): xp for xp in xh.get("players") or [] if xp.get("account_id")
+    }
+    changed = False
+    for p in anonymous:
+        xp = by_slot.get(p.get("player_slot")) or by_account.get(p.get("account_id"))
+        if not xp:
+            continue
+        if xp.get("personaname") and not p.get("personaname"):
+            p["personaname"] = xp["personaname"]
+            changed = True
+        if xp.get("rank_tier") and not p.get("rank_tier"):
+            p["rank_tier"] = xp["rank_tier"]
+            changed = True
+    if changed:
+        try:
+            dumpjson(match, os.path.join(MATCHES_DIR, f"{match_id}.json"))
+        except Exception as e:
+            logger.warning(f"补充匿名玩家数据后回写比赛缓存失败: {e}")
+        logger.info(f"比赛 {match_id} 已从小黑盒补充 {len(anonymous)} 名匿名玩家数据")
+
+
+# ============================================================
 # 玩家数据初始化
 # ============================================================
 def init_player(player):
@@ -928,6 +1003,7 @@ async def generate_match_image(
         logger.error("无法获取比赛数据")
         return False
 
+    await _supplement_anonymous(match_id, match)
     await refresh_dicts(match)
 
     font_paths = await init_fonts()
@@ -936,6 +1012,7 @@ async def generate_match_image(
         return False
 
     await init_images()
+    await _ensure_pro_badge()
 
     # 同步的 PIL 绘制 + 保存是 CPU/IO 密集操作，放到线程执行，避免阻塞事件循环。
     return await asyncio.to_thread(
@@ -944,6 +1021,15 @@ async def generate_match_image(
 
 
 def _render_match_image(match, font_paths, scale, output_path, match_id, t0):
+    # 职业认证徽章（透明 PNG，_ensure_pro_badge 预生成；缺失时降级为无徽章）
+    badge_img = None
+    badge_file = image_path("pro_badge.png")
+    if os.path.exists(badge_file):
+        try:
+            badge_img = Image.open(badge_file).convert("RGBA")
+        except Exception:
+            badge_img = None
+
     def _s(v):
         return int(v * scale)
 
@@ -1141,18 +1227,26 @@ def _render_match_image(match, font_paths, scale, output_path, match_id, t0):
                 fill=(128, 128, 128),
             )
 
-            pname = (
-                p.get("personaname")
-                if p.get("personaname")
-                else "匿名玩家 {}".format(p.get("account_id") if p.get("account_id") else "")
-            )
+            # 玩家名：职业选手优先显示职业名（OpenDota 名录 name，普通玩家为 null），
+            # 其次 steam 昵称，最后匿名占位
+            pname = p.get("name") or p.get("personaname")
+            if not pname:
+                pname = "匿名玩家 {}".format(p.get("account_id") if p.get("account_id") else "")
+            is_pro = bool(p.get("name")) and badge_img is not None
+            badge_size = _s(13)
+            badge_w = badge_size + _s(3) if is_pro else 0
+            pname_y = _s(167) + _s(60) * slot + _s(65) * idx
             pname_size = font_getsize_with_fallback(pname, font_paths, font_size)
-            while rank_size[0] + pname_size[0] > _s(240):
+            while rank_size[0] + badge_w + pname_size[0] > _s(240):
                 pname = pname[:-2] + "…"
                 pname_size = font_getsize_with_fallback(pname, font_paths, font_size)
+            if is_pro:
+                # 认证徽章（SVG 渲染的透明 PNG），垂直居中对齐玩家名
+                badge = badge_img.resize((badge_size, badge_size), _RESAMPLE_LANCZOS)
+                image.paste(badge, (_s(165), pname_y + (pname_size[1] - badge_size) // 2), badge)
             draw_text_with_fallback(
                 draw,
-                (_s(165), _s(167) + _s(60) * slot + _s(65) * idx),
+                (_s(165) + badge_w, pname_y),
                 pname,
                 font_paths,
                 font_size,
@@ -1475,7 +1569,7 @@ def _render_match_image(match, font_paths, scale, output_path, match_id, t0):
 
     used_fonts = set()
     for p in match.get("players", []):
-        pname = p.get("personaname") if p.get("personaname") else ""
+        pname = p.get("name") or p.get("personaname") or ""
         if pname:
             segs = segment_text_by_fonts(pname, font_paths)
             for _, fp in segs:

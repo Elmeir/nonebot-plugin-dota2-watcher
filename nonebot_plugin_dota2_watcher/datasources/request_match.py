@@ -63,7 +63,7 @@ async def request_match_info_opendota(match_id: int, api_key: str | None = None)
 
 
 async def request_news() -> dict:
-    """获取 DOTA2 官方新闻（最新一条）。"""
+    """获取 DOTA2 官方新闻（最新 5 条，events 按时间倒序）。"""
     try:
         return await get_json(STEAM_NEWS_URL)
     except ValueError:

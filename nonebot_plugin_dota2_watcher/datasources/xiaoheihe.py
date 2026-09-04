@@ -398,10 +398,12 @@ def convert_match(result, match_id, name2id):
 # ============================================================
 # 请求入口
 # ============================================================
-async def request_match_info_xiaoheihe(match_id):
-    """从小黑盒公开接口拉取比赛结果，转换为 OpenDota 兼容结构并缓存到本地。
+async def fetch_xiaoheihe_match(match_id) -> dict:
+    """请求小黑盒公开接口并转换为 OpenDota 兼容结构（不写比赛缓存）。
 
-    返回 dict；请求失败或上游返回异常时抛出 DOTA2HTTPError。
+    供战报生成器做匿名玩家数据补充使用：不落盘可避免小黑盒简化数据
+    （无 damage_inflictor 等分析字段）覆盖 OpenDota 的完整缓存。
+    请求失败或上游返回异常时抛出 DOTA2HTTPError。
     """
     params = sign_params(MATCH_DETAIL_PATH, {**MATCH_BASE_PARAMS, "match_id": str(int(match_id))})
     try:
@@ -417,6 +419,15 @@ async def request_match_info_xiaoheihe(match_id):
     # players 为空说明上游没有返回玩家数据，等价于无数据，抛出异常
     if not match["players"]:
         raise DOTA2HTTPError(f"小黑盒回退数据源返回异常：players 为空（match_id={match_id}）")
+    return match
+
+
+async def request_match_info_xiaoheihe(match_id):
+    """从小黑盒公开接口拉取比赛结果，转换为 OpenDota 兼容结构并缓存到本地。
+
+    返回 dict；请求失败或上游返回异常时抛出 DOTA2HTTPError。
+    """
+    match = await fetch_xiaoheihe_match(match_id)
 
     # 写入 match_report 使用的比赛缓存，便于战报图片生成器直接复用。
     try:

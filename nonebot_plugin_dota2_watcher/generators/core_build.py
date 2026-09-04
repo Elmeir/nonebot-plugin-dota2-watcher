@@ -36,10 +36,10 @@ else:
 # 所有目录 / URL / 缓存等配置统一从 config.py 读取。
 if __package__:
     from .. import config as _cfg
-    from ..utils import download_file, dumpjson, image_to_data_uri, loadjson
+    from ..utils import async_download_bytes, dumpjson, image_to_data_uri, loadjson
 else:
     import config as _cfg
-    from utils import download_file, dumpjson, image_to_data_uri, loadjson
+    from utils import async_download_bytes, dumpjson, image_to_data_uri, loadjson
 
 WORK_DIR = str(_cfg.BASE_DIR)
 IMAGES_DIR = str(_cfg.IMAGES_DIR)
@@ -143,9 +143,18 @@ THEMES = {"dark": THEME_DARK, "light": THEME_LIGHT}
 # ============================================================
 # 工具函数
 # ============================================================
-def _download_to(url, filepath, quiet=False):
-    """下载 url 内容到本地文件，成功返回 True，失败返回 False。"""
-    return download_file(url, filepath, timeout=_cfg.config.d2w_download_timeout, quiet=quiet)
+async def _download_to(url, filepath, quiet=False):
+    """异步下载 url 内容到本地文件，成功返回 True，失败返回 False。"""
+    try:
+        body = await async_download_bytes(url, timeout=_cfg.config.d2w_download_timeout)
+    except Exception as e:
+        if not quiet:
+            print(f"警告: 下载 {os.path.basename(filepath)} 失败: {e}", file=sys.stderr)
+        return False
+    os.makedirs(os.path.dirname(os.path.abspath(filepath)) or ".", exist_ok=True)
+    with open(filepath, "wb") as f:
+        f.write(body)
+    return True
 
 
 def _repo_icon_url(name):
@@ -153,10 +162,10 @@ def _repo_icon_url(name):
     return REPO_RAW_BASE + f"images/abilities/{name}.png"
 
 
-def _download_sources(sources, filepath):
+async def _download_sources(sources, filepath):
     """按顺序尝试多个源下载，任一成功即返回 True；仅最后一个源失败时打印告警。"""
     for i, url in enumerate(sources):
-        if _download_to(url, filepath, quiet=i < len(sources) - 1):
+        if await _download_to(url, filepath, quiet=i < len(sources) - 1):
             return True
     return False
 
@@ -177,7 +186,7 @@ async def ensure_data_file():
     """检查 d2pt_core_build.json 是否存在或超过 72 小时，需要时从远程下载。
     同时同步更新天赋中文名文件 talents_cn.json，并确保技能映射 abilities.json 存在。
 
-    网络下载用 asyncio.to_thread 丢到线程池，避免阻塞事件循环；
+    网络下载用原生异步 async_download_bytes，不阻塞事件循环；
     本地文件读取/生成仍保持同步（快且无 I/O 等待）。
     """
     global TALENTS_CN, ABILITIES
@@ -191,14 +200,14 @@ async def ensure_data_file():
 
     if need_download:
         print(f"正在更新数据文件: {DATA_URL}")
-        if await asyncio.to_thread(_download_to, DATA_URL, DATA_FILE):
+        if await _download_to(DATA_URL, DATA_FILE):
             print(f"数据文件已更新: {DATA_FILE}")
         elif not os.path.exists(DATA_FILE):
             print(f"错误: 本地数据文件 {DATA_FILE} 不存在", file=sys.stderr)
 
         # 与主数据同步更新天赋中文名
         print(f"正在同步更新天赋中文名: {TALENTS_CN_URL}")
-        if await asyncio.to_thread(_download_to, TALENTS_CN_URL, TALENTS_CN_FILE):
+        if await _download_to(TALENTS_CN_URL, TALENTS_CN_FILE):
             print(f"天赋中文名已更新: {TALENTS_CN_FILE}")
         elif not os.path.exists(TALENTS_CN_FILE):
             print(f"警告: 本地天赋中文名文件 {TALENTS_CN_FILE} 不存在", file=sys.stderr)
@@ -209,14 +218,14 @@ async def ensure_data_file():
     # 确保技能映射存在：仅在 abilities.json 缺失时，用 npc_ability_ids.txt 本地生成（不从仓库拉取）
     if not os.path.exists(ABILITIES_FILE):
         if not os.path.exists(NPC_ABILITY_IDS_FILE):
-            await asyncio.to_thread(_download_sources, NPC_ABILITY_IDS_URLS, NPC_ABILITY_IDS_FILE)
+            await _download_sources(NPC_ABILITY_IDS_URLS, NPC_ABILITY_IDS_FILE)
         if os.path.exists(NPC_ABILITY_IDS_FILE):
             generate_abilities()
             # 生成完成后删除临时源文件，只保留 abilities.json
             os.remove(NPC_ABILITY_IDS_FILE)
     ABILITIES = loadjson(ABILITIES_FILE)
     # 物品映射：items.json 可能缺失（如数据目录迁移后），兜底保证其就绪（内部同样含网络下载）
-    await asyncio.to_thread(ensure_items_cache)
+    await ensure_items_cache()
 
 
 def _avg_time_minutes(time_str):
@@ -286,7 +295,7 @@ def load_items_from_json():
     return {int(k): v for k, v in data.items()}
 
 
-def ensure_items_cache():
+async def ensure_items_cache():
     """确保物品 ID -> 名称映射可用；items.json 缺失时从 OpenDota 拉取并缓存。
 
     items.json 原本由战报模块（match_report）生成，出装命令单独运行时可能缺失，
@@ -300,7 +309,7 @@ def ensure_items_cache():
         ITEMS = items
         return
     # 从 OpenDota 拉取并转成与 match_report 一致的 {id: name} 缓存格式
-    if _download_to(OPENDOTA_ITEMS_URL, ITEMS_FILE):
+    if await _download_to(OPENDOTA_ITEMS_URL, ITEMS_FILE):
         raw = loadjson(ITEMS_FILE)
         items = {
             int(it.get("id")): key.replace("item_", "")
@@ -362,8 +371,8 @@ def _solid_png_data_url(rgb=(128, 128, 128), w=64, h=36):
     return "data:image/png;base64," + base64.b64encode(png).decode()
 
 
-def ability_name_to_image(ability_name):
-    """技能名 -> base64 data URL（优先本地缓存，缺失则下载）。
+async def ability_name_to_image(ability_name):
+    """技能名 -> base64 data URL（优先本地缓存，缺失则异步下载）。
 
     - special_bonus_* 天赋：使用 attribute_bonus 图标（仓库 gh-proxy）。
     - ability_base（空槽）：使用 undefined 图标。
@@ -375,7 +384,7 @@ def ability_name_to_image(ability_name):
     if ability_name.startswith("special_bonus_"):
         bonus_path = os.path.join(ABILITIES_IMAGES_DIR, f"{ATTRIBUTE_BONUS_IMAGE_NAME}.png")
         if not os.path.exists(bonus_path):
-            _download_sources(
+            await _download_sources(
                 [
                     _repo_icon_url(ATTRIBUTE_BONUS_IMAGE_NAME),
                     ABILITY_IMAGE_URL.format(name=ATTRIBUTE_BONUS_IMAGE_NAME),
@@ -388,7 +397,7 @@ def ability_name_to_image(ability_name):
     if ability_name == "ability_base":
         undefined_path = os.path.join(ABILITIES_IMAGES_DIR, f"{UNDEFINED_IMAGE_NAME}.png")
         if not os.path.exists(undefined_path):
-            _download_to(_repo_icon_url(UNDEFINED_IMAGE_NAME), undefined_path)
+            await _download_to(_repo_icon_url(UNDEFINED_IMAGE_NAME), undefined_path)
         if os.path.exists(undefined_path):
             return image_to_data_uri(undefined_path)
         return _solid_png_data_url()
@@ -397,7 +406,7 @@ def ability_name_to_image(ability_name):
     if not os.path.exists(local_path):
         # 下载顺序：仓库 gh-proxy -> steamstatic CDN
         sources = [_repo_icon_url(ability_name), ABILITY_IMAGE_URL.format(name=ability_name)]
-        if not _download_sources(sources, local_path):
+        if not await _download_sources(sources, local_path):
             # 全部失败（最后一个源已告警）：标记为缺失，返回占位图，不再重试
             _MISSING_ABILITIES.add(ability_name)
             return _solid_png_data_url()
@@ -513,7 +522,7 @@ def convert_lategame_inventories(lategame_raw):
     return results
 
 
-def convert_ability_build(ability_build_raw, match_count=0):
+async def convert_ability_build(ability_build_raw, match_count=0):
     """转换加点格式：[{'p': ..., 'wr': ..., 'b': [skill_id, ...]}, ...]
     -> {most_used: {...}, best_wr: {...}}，各含 build/pick_rate/win_rate/matches。"""
     if not ability_build_raw:
@@ -527,19 +536,16 @@ def convert_ability_build(ability_build_raw, match_count=0):
             if not os.path.exists(os.path.join(ABILITIES_IMAGES_DIR, f"{name}.png")):
                 missing.add(name)
     if missing:
-        from concurrent.futures import ThreadPoolExecutor
+        await asyncio.gather(*(ability_name_to_image(name) for name in missing))
 
-        with ThreadPoolExecutor(max_workers=8) as ex:
-            list(ex.map(ability_name_to_image, missing))
-
-    def _build(entry):
+    async def _build(entry):
         build = []
         for skill_id in entry.get("b", []):
             ability_name = ability_id_to_name(skill_id)
             build.append(
                 {
                     "ability": ability_name,
-                    "image": ability_name_to_image(ability_name),
+                    "image": await ability_name_to_image(ability_name),
                 }
             )
         # 大招固定在第 6 级（下标5）学习：仅该槽位标记为 is_ult
@@ -557,8 +563,8 @@ def convert_ability_build(ability_build_raw, match_count=0):
     most_used = max(ability_build_raw, key=lambda x: x.get("p", 0))
     best_wr = max(ability_build_raw, key=lambda x: x.get("wr", 0))
     return {
-        "most_used": _build(most_used),
-        "best_wr": _build(best_wr),
+        "most_used": await _build(most_used),
+        "best_wr": await _build(best_wr),
     }
 
 
@@ -614,7 +620,7 @@ def _section_block(title_html, rows_html, gap="0.375rem"):
     )
 
 
-def build_item_card(item, theme=THEME_DARK, show_time=True, show_core=True, stretch=False):
+async def build_item_card(item, theme=THEME_DARK, show_time=True, show_core=True, stretch=False):
     """构建单个物品卡片 HTML，完全照抄网页 div 结构。
 
     stretch=True 时卡片按 6 格网格固定宽度（与天赋/加点对齐），不足 6 格也保持相同列位。
@@ -631,7 +637,7 @@ def build_item_card(item, theme=THEME_DARK, show_time=True, show_core=True, stre
         # 本地缺失时按需从 CDN 下载（失败则标记，避免重复告警）
         if item_name and img_filename not in _MISSING_ITEMS:
             url_name = "recipe" if item_name.startswith("recipe") else item_name
-            if not _download_to(ITEM_IMAGE_URL.format(name=url_name), img_path, quiet=True):
+            if not await _download_to(ITEM_IMAGE_URL.format(name=url_name), img_path, quiet=True):
                 _MISSING_ITEMS.add(img_filename)
     if os.path.exists(img_path):
         bg_image = f"url('{image_to_data_uri(img_path)}')"
@@ -686,7 +692,14 @@ def build_item_card(item, theme=THEME_DARK, show_time=True, show_core=True, stre
     return card
 
 
-def build_items_rows(items, theme, show_time=True, show_core=True, max_per_row=7, wrap=True):
+async def _build_item_cards(items, theme, show_time=True, show_core=True):
+    """并发构建多个物品卡片 HTML（卡片内可能按需异步下载缺失图标）。"""
+    return await asyncio.gather(
+        *(build_item_card(it, theme, show_time, show_core, stretch=True) for it in items)
+    )
+
+
+async def build_items_rows(items, theme, show_time=True, show_core=True, max_per_row=7, wrap=True):
     """构建物品行 HTML。
 
     wrap=True 时物品过多会自动换行/分两行；wrap=False 时全部排列在一行不换行。
@@ -694,9 +707,10 @@ def build_items_rows(items, theme, show_time=True, show_core=True, max_per_row=7
     gap = "0.375rem"
     if not wrap:
         # 出门装/六格神装：固定 6 格网格宽度（与天赋/加点对齐），不足 6 格也保持相同列位
+        cards = await _build_item_cards(items, theme, show_time, show_core)
         return (
             f'<div style="display: flex; flex-wrap: nowrap; gap: {gap}; width: 100%; justify-content: flex-start;">'
-            f"{''.join(build_item_card(it, theme, show_time, show_core, stretch=True) for it in items)}"
+            f"{''.join(cards)}"
             f"</div>"
         )
     if len(items) > max_per_row:
@@ -710,11 +724,10 @@ def build_items_rows(items, theme, show_time=True, show_core=True, max_per_row=7
             margin = f"margin-bottom: calc({gap} + 1.078125rem);"
             if last:
                 margin = "margin-bottom: 1.125rem;" if has_core else ""
+            cards = await _build_item_cards(chunk, theme, show_time, show_core)
             parts.append(
                 f'<div style="display: flex; flex-wrap: wrap; gap: {gap};{margin}">'
-                + "".join(
-                    build_item_card(it, theme, show_time, show_core, stretch=True) for it in chunk
-                )
+                + "".join(cards)
                 + "</div>"
             )
         return "".join(parts)
@@ -722,9 +735,10 @@ def build_items_rows(items, theme, show_time=True, show_core=True, max_per_row=7
         # 核心出装：如果只有一行且有CORE物品，添加额外的底部间距
         has_core = show_core and any(it.get("is_core", False) for it in items)
         margin = "margin-bottom: 1.125rem;" if has_core else ""
+        cards = await _build_item_cards(items, theme, show_time, show_core)
         return (
             f'<div style="display: flex; flex-wrap: wrap; gap: {gap};{margin}">'
-            f"{''.join(build_item_card(it, theme, show_time, show_core, stretch=True) for it in items)}"
+            f"{''.join(cards)}"
             f"</div>"
         )
 
@@ -904,7 +918,7 @@ def build_talents_html(talents, theme):
     )
 
 
-def build_html(
+async def build_html(
     hero_name_cn,
     pos_num,
     core_items,
@@ -930,7 +944,7 @@ def build_html(
     talents : list | None 天赋数据
     """
     sorted_core = sorted(core_items, key=lambda x: _avg_time_minutes(x.get("avg_time")))
-    core_rows = build_items_rows(sorted_core, theme, show_time=True, show_core=True, max_per_row=6)
+    core_rows = await build_items_rows(sorted_core, theme, show_time=True, show_core=True, max_per_row=6)
 
     title_text = f"{hero_name_cn} {pos_num} 号位"
     if win_rate:
@@ -963,11 +977,13 @@ def build_html(
             # 超过 6 个时，前 6 个一排，其余排到第二行
             if len(start_items_list) > 6:
                 row1, row2 = start_items_list[:6], start_items_list[6:]
-                start_rows = build_items_rows(
+                start_rows = await build_items_rows(
                     row1, theme, show_time=False, show_core=False, wrap=False
-                ) + build_items_rows(row2, theme, show_time=False, show_core=False, wrap=False)
+                ) + await build_items_rows(
+                    row2, theme, show_time=False, show_core=False, wrap=False
+                )
             else:
-                start_rows = build_items_rows(
+                start_rows = await build_items_rows(
                     start_items_list, theme, show_time=False, show_core=False, wrap=False
                 )
             start_title = _section_title("出门装", theme)
@@ -982,7 +998,7 @@ def build_html(
             if not items:
                 continue
             period = lg.get("period", "")
-            lg_rows = build_items_rows(items, theme, show_time=False, show_core=False, wrap=False)
+            lg_rows = await build_items_rows(items, theme, show_time=False, show_core=False, wrap=False)
             lg_title = _section_title(period, theme)
             bottom.append(_section_block(lg_title, lg_rows))
     if bottom:
@@ -1146,7 +1162,7 @@ async def generate_image(
     # 加点（技能升级顺序）
     ability_build_raw = pos_data.get("ab", [])
     match_count = pos_data.get("mc", 0) or 0
-    ability_build_data = convert_ability_build(ability_build_raw, match_count)
+    ability_build_data = await convert_ability_build(ability_build_raw, match_count)
 
     # 天赋
     talents_raw = pos_data.get("tl", [])
@@ -1165,9 +1181,8 @@ async def generate_image(
     core_win_rate = pos_data.get("wr")
 
     theme_dict = THEMES.get(theme, THEME_DARK)
-    # build_html 内部含技能/物品图标的同步下载（本地缺失时），丢到线程池避免阻塞事件循环
-    html = await asyncio.to_thread(
-        build_html,
+    # build_html 内部含技能/物品图标缺失时的按需异步下载
+    html = await build_html(
         hero_name_cn,
         pos_num,
         core_build,

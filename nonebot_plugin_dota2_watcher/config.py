@@ -192,7 +192,7 @@ STEAM_MATCH_DETAILS_URL = (
     f"{STEAM_API_BASE}/IDOTA2Match_570/GetMatchDetails/V001/?key={{key}}&match_id={{match_id}}"
 )
 STEAM_LIVE_GAMES_URL = f"{STEAM_API_BASE}/IDOTA2Match_570/GetLiveLeagueGames/v1?key={{key}}"
-STEAM_NEWS_URL = "https://store.steampowered.com/events/ajaxgetpartnereventspageable/?clan_accountid=0&appid=570&offset=0&count=1&l=schinese"
+STEAM_NEWS_URL = "https://store.steampowered.com/events/ajaxgetpartnereventspageable/?clan_accountid=0&appid=570&offset=0&count=5&l=schinese"
 
 # Valve DOTA2 官网 / CDN
 DOTA2_API_URL = "https://www.dota2.com/webapi/IDOTA2League/GetLeagueData/v001?league_id={league_id}&delay_seconds=0"

@@ -27,6 +27,7 @@ report_cmd = on_command("战报", priority=10, block=True)
 build_cmd = on_command("出装", priority=10, block=True)
 ti_cmd = on_command("ti", aliases={"TI"}, priority=10, block=True)
 hero_pool_cmd = on_command("英雄池", priority=10, block=True)
+pro_cmd = on_command("pro", aliases={"PRO"}, priority=10, block=True)
 subscribe_cmd = on_command(
     "订阅", priority=10, block=True, permission=GROUP_ADMIN | GROUP_OWNER | SUPERUSER
 )
@@ -188,6 +189,23 @@ async def handle_hero_pool(event: GroupMessageEvent):
 
 
 # ---------------------------------------------------------------
+# /pro：查询与职业选手的对战记录
+# ---------------------------------------------------------------
+@pro_cmd.handle()
+async def handle_pro(event: GroupMessageEvent):
+    args = _args(event)
+    if len(args) != 1:
+        await pro_cmd.finish("请输入：/pro [steam_id 或 玩家昵称]")
+    try:
+        text = await service.pro_report(event.group_id, args[0])
+    except ValueError as e:
+        await pro_cmd.finish(str(e))
+    if text:
+        await pro_cmd.finish(text)
+    await pro_cmd.finish("职业选手对战记录查询失败")
+
+
+# ---------------------------------------------------------------
 # /订阅：查看订阅状态 / 切换或指定开、关新闻、TI 订阅（管理员以上）
 # ---------------------------------------------------------------
 _SUBSCRIBE_HINT = "请输入：/订阅、/订阅 新闻|ti、/订阅 新闻|ti 开|关"
@@ -234,6 +252,7 @@ _HELP_TEXT = (
     "/出装 [英雄名] [位置1-5] [dark|light]：核心出装图\n"
     "/ti [小组赛|正赛]：TI 赛事战报图片（默认最新阶段）\n"
     "/英雄池 [steam_id 或 玩家昵称]：生成英雄池环形图\n"
+    "/pro [steam_id 或 玩家昵称]：与职业选手的对战记录\n"
     "/订阅：查看订阅状态（总开关与本群开关）\n"
     "/订阅 新闻|ti [开|关]：切换或指定开、关订阅（管理员以上）"
 )

@@ -112,6 +112,7 @@ LOCALSTORE_CACHE_DIR=./cache   # 可选：图片/战报等可再生缓存目录
 | `/出装 [英雄名] [位置1-5] [dark\|light]` | 生成核心出装图片                 | 任意  |
 | `/ti [小组赛\|正赛]`                  | 查看 TI 赛事战报图片（默认自动判断最新阶段） | 任意  |
 | `/英雄池 [steam_id 或 玩家昵称] [min\|mid\|max 或 小\|中\|大]` | 生成玩家英雄池环形图（数量档位可选，默认 min/25 场） | 任意  |
+| `/pro [steam_id 或 玩家昵称]`        | 查询与职业选手的队友/对手对战记录（Stratz + OpenDota 互补，Liquipedia 校验，展示前 10 条） | 任意  |
 | `/订阅`                            | 查看订阅状态（全局总开关与本群开关）        | 管理员 |
 | `/订阅 新闻 [开\|关]`                 | 切换或指定开、关官方新闻订阅并展示状态       | 管理员 |
 | `/订阅 ti [开\|关]`                   | 切换或指定开、关 TI 赛事订阅并展示状态      | 管理员 |
@@ -139,6 +140,7 @@ nonebot_plugin_dota2_watcher/     # 插件包
 │   ├── d2pt.py              # D2PT 数据
 │   ├── xiaoheihe.py         # 小黑盒比赛数据源（OpenDota 兜底）
 │   ├── ti_results.py        # TI 赛果
+│   ├── pro_peers.py         # 职业选手对战记录（Stratz）
 │   └── hero_pool.py         # Stratz 英雄池数据
 ├── generators/              # 图片 / 文本生成
 │   ├── core_build.py        # 核心出装图生成

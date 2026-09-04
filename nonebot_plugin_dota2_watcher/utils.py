@@ -246,3 +246,32 @@ def image_to_data_uri(path):
     with open(path, "rb") as f:
         data = base64.b64encode(f.read()).decode("ascii")
     return f"data:image/png;base64,{data}"
+
+
+# ---------------------------------------------------------------
+# 进程内 single-flight：相同 key 的并发异步任务共享同一次执行
+# ---------------------------------------------------------------
+_single_flight_tasks: dict = {}
+
+
+async def run_single_flight(key, factory):
+    """相同 key 的并发调用共享 factory() 的同一次执行（single-flight 去重）。
+
+    - 任务进行中：后续相同 key 的调用等待该任务，不重复执行 factory；
+    - 任务已完成交付：下次调用会重新执行 factory（保证可再次刷新数据）；
+    - factory 抛出的异常会原样传给所有等待者。
+    适用于耗时查询去重（如 /pro 相同账号的并发请求只抓取一次）。
+    """
+    task = _single_flight_tasks.get(key)
+    if task is not None and task.done():
+        _single_flight_tasks.pop(key, None)
+        task = None
+    if task is None:
+        task = asyncio.create_task(factory())
+        _single_flight_tasks[key] = task
+    try:
+        # shield：单个等待者被取消时不波及共享任务与其他等待者
+        return await asyncio.shield(task)
+    finally:
+        if task.done() and _single_flight_tasks.get(key) is task:
+            _single_flight_tasks.pop(key, None)

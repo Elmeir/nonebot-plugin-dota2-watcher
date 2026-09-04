@@ -5,25 +5,27 @@
 """
 
 import asyncio
+import json
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from nonebot import get_bots
 from nonebot.adapters.onebot.v11 import Message, MessageSegment
 from nonebot.log import logger
 
-from ..config import config
-from ..datasources import d2pt, ti_results
+from ..config import DATA_DIR, config
+from ..datasources import d2pt, pro_peers, ti_results
 from ..datasources.hero_pool import HeroPoolError
+from ..datasources.pro_peers import ProPeersError
 from ..datasources.request_match import (
     request_match_history,
     request_match_info_opendota,
     request_news,
 )
 from ..generators import core_build, hero_pool, match_builder
+from ..utils import load_cache, run_single_flight
 from . import store
 from .player import Player
-
-_last_news_title = ""
 
 # Steam GetMatchHistory 接口存在速率限制，并发过高易触发 429/503 导致请求失败，
 # 因此用信号量限制同批并发拉取比赛历史的数量（并发上限见 config.d2w_history_concurrency）。
@@ -104,6 +106,7 @@ def toggle_subscription(group_id, key: str) -> str:
     name = _SUBSCRIPTIONS[key][0]
     enabled = store.toggle_subscription(str(group_id), key)
     store.save()
+    _sync_news_baseline(key)
     return f"已{'开启' if enabled else '关闭'}{name}订阅\n" + subscription_status(group_id)
 
 
@@ -112,6 +115,7 @@ def set_subscription(group_id, key: str, enabled: bool) -> str:
     name = _SUBSCRIPTIONS[key][0]
     enabled = store.set_subscription(str(group_id), key, bool(enabled))
     store.save()
+    _sync_news_baseline(key)
     return f"{name}订阅已{_state(enabled)}\n" + subscription_status(group_id)
 
 
@@ -127,50 +131,67 @@ def subscription_status(group_id) -> str:
 
 
 async def d2pt_report(pos: str = "all") -> Message:
-    """D2PT 位置数据（文本）。"""
-    try:
-        # 默认走 1 小时缓存，避免每次触发都重新拉取
-        posdata = await d2pt.load_data(force_update=False)
-    except Exception:
-        logger.exception("d2pt 数据加载失败")
-        return Message("d2pt读取数据失败")
-    if not posdata:
-        return Message("d2pt读取数据失败")
+    """D2PT 位置数据（文本）。相同位置的并发查询共享同一次执行。"""
 
-    msg = d2pt.generate_message(posdata, pos)
-    if not msg:
-        return Message("d2pt读取数据失败")
+    async def _build() -> Message:
+        try:
+            # 默认走 1 小时缓存，避免每次触发都重新拉取
+            posdata = await d2pt.load_data(force_update=False)
+        except Exception:
+            logger.exception("d2pt 数据加载失败")
+            return Message("d2pt读取数据失败")
+        if not posdata:
+            return Message("d2pt读取数据失败")
 
-    return Message(msg)
+        msg = d2pt.generate_message(posdata, pos)
+        if not msg:
+            return Message("d2pt读取数据失败")
+
+        return Message(msg)
+
+    return await run_single_flight(("d2pt", pos), _build)
 
 
 async def report_image(match_id: str) -> str:
-    """生成开黑战报图片，返回本地路径；失败返回空串。"""
-    result = await match_builder.generate_report_img(match_id, force=True)
-    return result or ""
+    """生成开黑战报图片，返回本地路径；失败返回空串。相同比赛的并发查询共享同一次执行。"""
+
+    async def _build() -> str:
+        result = await match_builder.generate_report_img(match_id, force=True)
+        return result or ""
+
+    return await run_single_flight(("report", match_id), _build)
 
 
 async def build_image(hero: str, position=None, theme: str = "light") -> str:
-    """生成核心出装图片，返回本地路径；失败返回空串。"""
-    try:
-        result = await core_build.generate_image(hero, position, theme=theme)
-        return result or ""
-    except Exception:
-        logger.exception("出装图生成失败")
-        return ""
+    """生成核心出装图片，返回本地路径；失败返回空串。相同参数的并发查询共享同一次执行。"""
+
+    async def _build() -> str:
+        try:
+            result = await core_build.generate_image(hero, position, theme=theme)
+            return result or ""
+        except Exception:
+            logger.exception("出装图生成失败")
+            return ""
+
+    return await run_single_flight(("build", hero, position, theme), _build)
 
 
 async def ti_image(stage: str = "auto") -> str:
     """生成 TI 赛事战报图片，返回本地路径；失败返回空串。
 
     stage 取值 auto/swiss/elimination_round/main_event，传 auto 表示自动判断当前（最新）阶段。
+    相同阶段的并发查询共享同一次执行。
     """
-    try:
-        result = await ti_results.generate_league_report_image(stage=stage)
-        return result or ""
-    except Exception:
-        logger.exception("TI 战报生成失败")
-        return ""
+
+    async def _build() -> str:
+        try:
+            result = await ti_results.generate_league_report_image(stage=stage)
+            return result or ""
+        except Exception:
+            logger.exception("TI 战报生成失败")
+            return ""
+
+    return await run_single_flight(("ti", stage), _build)
 
 
 # 英雄池比赛数量档位：关键字（中英） -> 拉取场次；非法关键字回落默认挡
@@ -206,12 +227,56 @@ async def hero_pool_image(group_id, arg: str, size: str = "") -> str:
             f"未找到昵称为「{arg}」的订阅玩家，请先用 /添加刀塔玩家 订阅，或直接输入 steam_id"
         )
     count = _HERO_POOL_SIZES.get(size.strip().lower(), 25)
+
+    async def _build() -> str:
+        try:
+            return await hero_pool.generate_image(steam_id, count=count) or ""
+        except HeroPoolError as e:
+            raise ValueError(str(e))
+        except Exception:
+            logger.exception("英雄池生成失败")
+            return ""
+
+    # 相同账号 + 相同档位的并发查询共享同一次执行
+    return await run_single_flight(("hero_pool", steam_id, count), _build)
+
+
+async def pro_report(group_id, arg: str) -> str:
+    """查询玩家与职业选手的对战记录，返回文本。
+
+    arg 可为 steam_id（纯数字）或本群已订阅玩家昵称；
+    参数解析失败 / 未配置 Token 时抛出 ValueError（提示文案），查询失败返回空串。
+    相同账号的并发查询通过 single-flight 共享同一次执行（不重复抓取）。
+    """
+    arg = arg.strip()
+    # 优先按昵称匹配，因为昵称可能是数字，会与 steam_id 混淆
+    player = next(
+        (p for p in store.get_group(str(group_id)) if p.nickname == arg),
+        None,
+    )
+    if player is not None:
+        steam_id = player.short_steamID
+    elif arg.isdigit():
+        steam_id = int(arg)
+    else:
+        raise ValueError(
+            f"未找到昵称为「{arg}」的订阅玩家，请先用 /添加刀塔玩家 订阅，或直接输入 steam_id"
+        )
+
+    async def _build() -> str:
+        player_name, stratz_stats = await pro_peers.fetch_pro_peers(steam_id)
+        od_stats = await pro_peers.fetch_opendota_pros(steam_id)
+        stats = pro_peers.merge_stats(stratz_stats, od_stats)
+        stats = await pro_peers.filter_verified(stats)
+        await pro_peers.attach_last_match_ids(steam_id, stats)
+        return pro_peers.build_report(player_name, stats)
+
     try:
-        return await hero_pool.generate_image(steam_id, count=count) or ""
-    except HeroPoolError as e:
+        return await run_single_flight(int(steam_id), _build)
+    except ProPeersError as e:
         raise ValueError(str(e))
     except Exception:
-        logger.exception("英雄池生成失败")
+        logger.exception("职业选手对战记录查询失败")
         return ""
 
 
@@ -297,9 +362,46 @@ async def poll_ti_results() -> None:
     await _broadcast(msg, "subscribe_ti")
 
 
+# 新闻去重状态：记录已见过的新闻 gid，持久化到 data/news_state.json。
+# 停机期间发布的新闻在恢复后按 gid 补播，不会因重启丢基线而错过；
+# 首次部署（无状态文件）仅建立基线，不播报历史新闻。
+# 全部群退订新闻时删除基线文件：停订期间不积累状态，
+# 重新订阅后首轮轮询按首次运行重建基线，不会补播停订期间的旧新闻。
+_NEWS_STATE_FILE: Path = DATA_DIR / "news_state.json"
+_NEWS_STATE_MAX = 50  # 状态文件最多保留的 gid 数（防无限增长）
+
+
+def _sync_news_baseline(key: str) -> None:
+    """新闻订阅开关变化后同步基线：已无任何订阅群时删除基线文件。"""
+    if key != "news" or store.any_group_subscribed("subscribe_news"):
+        return
+    try:
+        _NEWS_STATE_FILE.unlink(missing_ok=True)
+    except Exception as e:
+        logger.warning(f"新闻基线删除失败：{e}")
+
+
+def _load_news_state() -> dict:
+    """读取新闻去重状态 {'seen_gids': [...]}；文件缺失/损坏返回空表（视为首次运行）。"""
+    data = load_cache(_NEWS_STATE_FILE)
+    return data if isinstance(data, dict) else {}
+
+
+def _save_news_state(seen: list[str]) -> None:
+    _NEWS_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _NEWS_STATE_FILE.write_text(
+        json.dumps({"version": 1, "seen_gids": seen[-_NEWS_STATE_MAX:]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
 async def poll_news() -> None:
-    """监听 DOTA2 官方新闻，出现新头条时广播。"""
-    global _last_news_title
+    """监听 DOTA2 官方新闻，出现新头条时广播。
+
+    每次拉取最新 5 条，按 gid 与本地状态去重后把未播报过的补播出去
+    （旧→新顺序，合并为一条消息）；停机期间发布的新闻会在恢复后补上。
+    无群订阅时不发请求（基线已在退订时删除，重新订阅按首次运行重建）。
+    """
     if not store.any_group_subscribed("subscribe_news"):
         return
     try:
@@ -307,21 +409,36 @@ async def poll_news() -> None:
     except Exception:
         logger.exception("获取 DOTA2 新闻失败")
         return
-    events = (news or {}).get("events") or []
+    events = [
+        e
+        for e in ((news or {}).get("events") or [])
+        if e.get("gid") and e.get("event_name")
+    ]
     if not events:
         return
-    title = events[0].get("event_name")
-    news_id = events[0].get("gid")
-    if not title:
+
+    state = _load_news_state()
+    first_run = not state
+    seen: list[str] = [str(g) for g in (state.get("seen_gids") or [])]
+    seen_set = set(seen)
+
+    # 未播报过的新闻（接口按时间倒序，reversed 后为旧→新）
+    fresh = [e for e in reversed(events) if str(e["gid"]) not in seen_set]
+    # 无论是否播报都先更新并持久化已见列表（播报失败不重发，避免刷屏）
+    for e in events:
+        gid = str(e["gid"])
+        if gid not in seen_set:
+            seen.append(gid)
+            seen_set.add(gid)
+    try:
+        _save_news_state(seen)
+    except Exception as e:
+        logger.warning(f"新闻状态写入失败：{e}")
+
+    if first_run or not fresh:
         return
-    if _last_news_title == "":
-        # 首次运行仅建立基线，不播报历史新闻
-        _last_news_title = title
-        return
-    if title != _last_news_title:
-        _last_news_title = title
-        link = f"www.dota2.com/newsentry/{news_id}"
-        await _broadcast(f"[news] {title} {link}", "subscribe_news")
+    lines = [f"[news] {e['event_name']} www.dota2.com/newsentry/{e['gid']}" for e in fresh]
+    await _broadcast("\n".join(lines), "subscribe_news")
 
 
 async def poll_new_matches() -> None:

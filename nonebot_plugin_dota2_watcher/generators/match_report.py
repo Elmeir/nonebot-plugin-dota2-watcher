@@ -895,14 +895,59 @@ async def get_match(match_id, wait=True, timeout=None, force=False, match_data=N
 # ============================================================
 # 匿名玩家数据补充（小黑盒）
 # ============================================================
+PRO_PLAYERS_CACHE = os.path.join(_cfg.DATA_DIR, "pro_players.json")
+PRO_PLAYERS_TTL = 7 * 86400  # 职业注册表更新缓慢，本地缓存 7 天
+_pro_registry = None  # 进程内缓存：account_id -> 职业名（空串表示确认职业但注册表无名）
+
+
+async def _load_pro_registry() -> dict:
+    """加载 OpenDota 职业选手注册表（account_id -> 职业名）。
+
+    本地缓存 7 天；过期或缺失时从 /api/proPlayers 拉取；拉取失败时退回
+    过期缓存。完全无数据返回空表（补充流程按非职业处理，不影响渲染）。
+    """
+    global _pro_registry
+    if _pro_registry is not None:
+        return _pro_registry
+    cached = loadjson(PRO_PLAYERS_CACHE) or {}
+    if time.time() - cached.get("fetched_at", 0) < PRO_PLAYERS_TTL:
+        _pro_registry = cached.get("players") or {}
+        return _pro_registry
+    try:
+        client = await get_http_client()
+        resp = await client.get(
+            f"{_cfg.OPENDOTA_BASE}/api/proPlayers", timeout=_cfg.config.d2w_download_timeout
+        )
+        players = {}
+        for pro in resp.json():
+            aid = pro.get("account_id")
+            if aid:
+                players[int(aid)] = pro.get("name") or ""
+        if players:
+            _pro_registry = players
+            dumpjson({"fetched_at": time.time(), "players": players}, PRO_PLAYERS_CACHE)
+            logger.info(f"职业选手注册表已更新，共 {len(players)} 人，已缓存到 {PRO_PLAYERS_CACHE}")
+            return _pro_registry
+        logger.warning("职业选手注册表解析为空，跳过保存")
+    except Exception as e:
+        logger.warning(f"职业选手注册表拉取失败（{type(e).__name__}），使用缓存数据")
+    _pro_registry = cached.get("players") or {}
+    return _pro_registry
+
+
 async def _supplement_anonymous(match_id, match):
     """用小黑盒数据补充 OpenDota 匿名玩家（无任何名字）的昵称与段位。
 
     OpenDota 对隐私资料玩家拿不到昵称，战报中只能显示「匿名玩家」；
     小黑盒对同一比赛的数据覆盖更全，可为这些玩家补回昵称（personaname），
-    缺段位（rank_tier）时一并补充。仅补充显示字段，不写入 name（职业名），
-    避免误加职业认证徽章。按 player_slot 匹配（与 Valve 槽位一致，最可靠），
-    account_id 兜底。补充成功后回写比赛缓存，后续渲染不再重复请求。
+    缺段位（rank_tier）时一并补充。按 player_slot 匹配（与 Valve 槽位一致，
+    最可靠），account_id 兜底。补充成功后回写比赛缓存，后续渲染不再重复请求。
+
+    职业认证：隐私保护会同时隐藏 account_id，OpenDota 无法关联职业注册表，
+    职业选手也会显示成「匿名玩家」（无认证徽章）；小黑盒补回 account_id 后
+    与 OpenDota 职业注册表比对，命中即写入职业名 name（渲染时触发认证徽章，
+    与 OpenDota 对职业选手的展示一致）。普通玩家的昵称不写入 name，避免误加
+    徽章。
     """
     players = match.get("players") or []
     anonymous = [p for p in players if not (p.get("name") or p.get("personaname"))]
@@ -921,11 +966,21 @@ async def _supplement_anonymous(match_id, match):
     by_account = {
         xp.get("account_id"): xp for xp in xh.get("players") or [] if xp.get("account_id")
     }
+    pro_names = await _load_pro_registry()
     changed = False
     for p in anonymous:
         xp = by_slot.get(p.get("player_slot")) or by_account.get(p.get("account_id"))
         if not xp:
             continue
+        xp_aid = xp.get("account_id")
+        if xp_aid and xp_aid in pro_names:
+            # 职业选手：注册表有名则写职业名（触发徽章），无名则仅标记
+            pro_name = pro_names[xp_aid]
+            if pro_name:
+                p["name"] = pro_name
+            else:
+                p["is_pro"] = True
+            changed = True
         if xp.get("personaname") and not p.get("personaname"):
             p["personaname"] = xp["personaname"]
             changed = True
@@ -981,9 +1036,20 @@ def get_team_by_slot(slot):
 # 战报图片生成（异步）
 # ============================================================
 async def generate_match_image(
-    match_id, output_path=None, wait=True, timeout=120, force=False, scale=1.4, match_data=None
+    match_id,
+    output_path=None,
+    wait=True,
+    timeout=120,
+    force=False,
+    scale=1.4,
+    match_data=None,
+    supplement_anonymous=True,
 ):
-    """根据比赛编号生成战报图片，返回图片路径或 False 表示失败。"""
+    """根据比赛编号生成战报图片，返回图片路径或 False 表示失败。
+
+    supplement_anonymous 为 False 时不接入小黑盒补充匿名玩家数据
+    （定时任务播报路径使用，避免额外请求拖慢播报）。
+    """
     t0 = time.time()
 
     # 缓存机制：已生成过的完整战报直接返回
@@ -1003,7 +1069,8 @@ async def generate_match_image(
         logger.error("无法获取比赛数据")
         return False
 
-    await _supplement_anonymous(match_id, match)
+    if supplement_anonymous:
+        await _supplement_anonymous(match_id, match)
     await refresh_dicts(match)
 
     font_paths = await init_fonts()
@@ -1232,7 +1299,8 @@ def _render_match_image(match, font_paths, scale, output_path, match_id, t0):
             pname = p.get("name") or p.get("personaname")
             if not pname:
                 pname = "匿名玩家 {}".format(p.get("account_id") if p.get("account_id") else "")
-            is_pro = bool(p.get("name")) and badge_img is not None
+            # 职业标识：OpenDota 职业名 name，或小黑盒补充流程写入的 is_pro 标记
+            is_pro = (bool(p.get("name")) or bool(p.get("is_pro"))) and badge_img is not None
             badge_size = _s(13)
             badge_w = badge_size + _s(3) if is_pro else 0
             pname_y = _s(167) + _s(60) * slot + _s(65) * idx

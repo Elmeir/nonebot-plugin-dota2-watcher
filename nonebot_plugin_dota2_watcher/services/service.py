@@ -322,9 +322,10 @@ async def _report_match(match: NewMatch) -> None:
 
     pic = None
     try:
-        # 复用阶段二已拉取的 match_info，避免图片生成时再次请求 OpenDota
+        # 复用阶段二已拉取的 match_info，避免图片生成时再次请求 OpenDota；
+        # 定时播报不接入小黑盒补充匿名玩家数据，避免额外请求拖慢播报
         pic = await match_builder.generate_report_img(
-            match.match_id, force=True, match_data=match.match_info
+            match.match_id, force=True, match_data=match.match_info, supplement_anonymous=False
         )
     except Exception:
         logger.exception(f"生成战报图片失败: {match.match_id}")

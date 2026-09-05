@@ -895,9 +895,26 @@ async def get_match(match_id, wait=True, timeout=None, force=False, match_data=N
 # ============================================================
 # 匿名玩家数据补充（小黑盒）
 # ============================================================
+# 小黑盒接口对隐私/被风控玩家会返回字面占位昵称「匿名玩家」（同一比赛
+# 多次请求结果不稳定，有时有真名有时是占位），视为无名处理，保留后续重试机会
+XIAOHEIHE_PLACEHOLDER_NAME = "匿名玩家"
+
 PRO_PLAYERS_CACHE = os.path.join(_cfg.DATA_DIR, "pro_players.json")
 PRO_PLAYERS_TTL = 7 * 86400  # 职业注册表更新缓慢，本地缓存 7 天
 _pro_registry = None  # 进程内缓存：account_id -> 职业名（空串表示确认职业但注册表无名）
+
+
+def _normalize_pro_registry(raw) -> dict:
+    """注册表缓存 JSON 的键为字符串（dumpjson 序列化所致），归一化为 int -> 职业名。"""
+    if not isinstance(raw, dict):
+        return {}
+    players = {}
+    for key, value in raw.items():
+        try:
+            players[int(key)] = value or ""
+        except (TypeError, ValueError):
+            continue
+    return players
 
 
 async def _load_pro_registry() -> dict:
@@ -911,7 +928,7 @@ async def _load_pro_registry() -> dict:
         return _pro_registry
     cached = loadjson(PRO_PLAYERS_CACHE) or {}
     if time.time() - cached.get("fetched_at", 0) < PRO_PLAYERS_TTL:
-        _pro_registry = cached.get("players") or {}
+        _pro_registry = _normalize_pro_registry(cached.get("players"))
         return _pro_registry
     try:
         client = await get_http_client()
@@ -931,8 +948,46 @@ async def _load_pro_registry() -> dict:
         logger.warning("职业选手注册表解析为空，跳过保存")
     except Exception as e:
         logger.warning(f"职业选手注册表拉取失败（{type(e).__name__}），使用缓存数据")
-    _pro_registry = cached.get("players") or {}
+    _pro_registry = _normalize_pro_registry(cached.get("players"))
     return _pro_registry
+
+
+def _load_pro_peers_ids() -> dict:
+    """汇总 /pro 指令缓存中的职业选手（account_id -> 职业名）。
+
+    扫描 data/pro_peers/ 下的 pro_peers_*.json（STRATZ proSteamAccount 认定）
+    与 opendota_pros_*.json（OpenDota /players/{id}/pros 名单），收集其
+    pro_id（即选手实际账号 ID）。两份名单口径偏宽（含社区比赛选手），
+    仅作为徽章补充来源，不改写显示名。无缓存时返回空表。
+    """
+    result = {}
+    cache_dir = os.path.join(_cfg.DATA_DIR, "pro_peers")
+    try:
+        entries = os.listdir(cache_dir)
+    except OSError:
+        return result
+    for fname in entries:
+        if not fname.endswith(".json"):
+            continue
+        if not (fname.startswith("pro_peers_") or fname.startswith("opendota_pros_")):
+            continue
+        data = loadjson(os.path.join(cache_dir, fname)) or {}
+        for st in data.get("stats") or data.get("records") or []:
+            try:
+                pid = int(st.get("pro_id") or 0)
+            except (TypeError, ValueError):
+                continue
+            if pid and pid not in result:
+                result[pid] = st.get("name") or ""
+    return result
+
+
+def _is_nameless(player) -> bool:
+    """判断玩家是否无名：无职业名，且昵称缺失或为小黑盒占位「匿名玩家」。"""
+    pname = player.get("personaname")
+    if pname == XIAOHEIHE_PLACEHOLDER_NAME:
+        pname = None
+    return not (player.get("name") or pname)
 
 
 async def _supplement_anonymous(match_id, match):
@@ -944,13 +999,19 @@ async def _supplement_anonymous(match_id, match):
     最可靠），account_id 兜底。补充成功后回写比赛缓存，后续渲染不再重复请求。
 
     职业认证：隐私保护会同时隐藏 account_id，OpenDota 无法关联职业注册表，
-    职业选手也会显示成「匿名玩家」（无认证徽章）；小黑盒补回 account_id 后
-    与 OpenDota 职业注册表比对，命中即写入职业名 name（渲染时触发认证徽章，
-    与 OpenDota 对职业选手的展示一致）。普通玩家的昵称不写入 name，避免误加
-    徽章。
+    职业选手也会显示成「匿名玩家」（无认证徽章）。补充时三重比对：
+    小黑盒补回的 account_id 命中 OpenDota 职业注册表 → 写入职业名 name
+    （渲染时触发认证徽章，与 OpenDota 对职业选手的展示一致）；命中 /pro
+    指令缓存的职业名单（STRATZ/OpenDota 职业对战记录）或小黑盒认证选手
+    标记（team_info，口径均偏宽）→ 仅加 is_pro 徽章不改名。普通玩家的
+    昵称不写入 name，避免误加徽章。
+
+    注意：小黑盒对部分玩家会返回字面占位昵称「匿名玩家」（同一比赛多次
+    请求结果不稳定），占位串不写入缓存，玩家保持无名以便下次生成时重试；
+    缓存中已存在的占位串也会被替换为后续拿到的真名。
     """
     players = match.get("players") or []
-    anonymous = [p for p in players if not (p.get("name") or p.get("personaname"))]
+    anonymous = [p for p in players if _is_nameless(p)]
     if not anonymous:
         return
     if match.get("data_source") == "xiaoheihe":
@@ -967,22 +1028,28 @@ async def _supplement_anonymous(match_id, match):
         xp.get("account_id"): xp for xp in xh.get("players") or [] if xp.get("account_id")
     }
     pro_names = await _load_pro_registry()
+    peers_pros = _load_pro_peers_ids()
     changed = False
     for p in anonymous:
         xp = by_slot.get(p.get("player_slot")) or by_account.get(p.get("account_id"))
         if not xp:
             continue
         xp_aid = xp.get("account_id")
-        if xp_aid and xp_aid in pro_names:
-            # 职业选手：注册表有名则写职业名（触发徽章），无名则仅标记
-            pro_name = pro_names[xp_aid]
-            if pro_name:
-                p["name"] = pro_name
-            else:
-                p["is_pro"] = True
+        in_registry = bool(xp_aid) and xp_aid in pro_names
+        in_peers = bool(xp_aid) and xp_aid in peers_pros
+        if in_registry and pro_names[xp_aid]:
+            # OpenDota 注册表命中：写职业名（触发徽章，显示与 OpenDota 一致）
+            p["name"] = pro_names[xp_aid]
             changed = True
-        if xp.get("personaname") and not p.get("personaname"):
-            p["personaname"] = xp["personaname"]
+        elif (in_registry or in_peers or xp.get("is_pro")) and not p.get("is_pro"):
+            # 注册表无名、/pro 缓存名单命中或小黑盒认证标记（口径较宽）：
+            # 仅加徽章，不改显示名
+            p["is_pro"] = True
+            changed = True
+        xp_name = xp.get("personaname")
+        if xp_name and xp_name != XIAOHEIHE_PLACEHOLDER_NAME and p.get("personaname") != xp_name:
+            # 真名才写入；同时覆盖缓存中遗留的占位串「匿名玩家」
+            p["personaname"] = xp_name
             changed = True
         if xp.get("rank_tier") and not p.get("rank_tier"):
             p["rank_tier"] = xp["rank_tier"]

@@ -273,6 +273,11 @@ def convert_player(xp, duration, name2id):
     except (TypeError, ValueError):
         account_id = None
 
+    # 接口对隐私/被风控玩家会返回字面占位昵称「匿名玩家」，视为无名
+    xh_name = str(xp.get("name") or "").strip()
+    if xh_name == "匿名玩家":
+        xh_name = ""
+
     player_slot = int(xp.get("playerSlot") or 0)
 
     item_ids = [item_id(u, name2id) for u in (xp.get("items") or [])]
@@ -301,7 +306,9 @@ def convert_player(xp, duration, name2id):
         "isRadiant": player_slot < 128,
         "hero_id": int(hero_info.get("hero_id") or 0),
         "account_id": account_id,
-        "personaname": xp.get("name") or "",
+        "personaname": xh_name,
+        # 小黑盒认证选手标记：仅认证玩家带 team_info 字段（口径较宽，含平台认证非职业玩家）
+        "is_pro": bool(xp.get("team_info")),
         "level": int(hero_info.get("level") or 0),
         "kills": int(kda.get("kill") or 0),
         "deaths": int(kda.get("death") or 0),

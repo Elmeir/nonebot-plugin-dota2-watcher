@@ -8,6 +8,9 @@ D2PT 位置数据、核心出装图片、TI 战报图片。
     D2W_PROXIES         代理，如 {"http": "...", "https": "..."}
     D2W_TIMEOUT         网络超时（秒），默认 20
     D2W_GAME_MODE       不播报的游戏模式，默认 [15, 19]
+    D2W_GROUP_MODE      群组生效模式：all / whitelist / blacklist，默认 all
+    D2W_GROUP_WHITELIST 白名单群号列表，如 [123456789]
+    D2W_GROUP_BLACKLIST 黑名单群号列表，如 [123456789]
 """
 
 from nonebot import get_driver, require

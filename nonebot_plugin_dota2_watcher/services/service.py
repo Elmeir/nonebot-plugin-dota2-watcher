@@ -13,7 +13,7 @@ from nonebot import get_bots
 from nonebot.adapters.onebot.v11 import Message, MessageSegment
 from nonebot.log import logger
 
-from ..config import DATA_DIR, config
+from ..config import DATA_DIR, config, is_group_allowed
 from ..datasources import d2pt, pro_peers, ti_results
 from ..datasources.hero_pool import HeroPoolError
 from ..datasources.pro_peers import ProPeersError
@@ -293,6 +293,9 @@ async def _broadcast(text: str | None, filter_key: str | None = None) -> None:
     all_groups = store.get_all_groups()
     msg = Message(f"[DOTA2]{text}")
     for gid, info in all_groups.items():
+        # 白名单/黑名单模式外的群不播报
+        if not is_group_allowed(gid):
+            continue
         if filter_key and not info.get(filter_key, True):
             continue
         for bot in bots.values():
@@ -449,7 +452,8 @@ async def poll_new_matches() -> None:
         (gid, player)
         for gid, players in data.items()
         for player in players
-        if player.display_recent_match
+        # 白名单/黑名单模式外的群不轮询、不播报
+        if player.display_recent_match and is_group_allowed(gid)
     ]
     if not watched:
         return

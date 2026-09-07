@@ -9,29 +9,51 @@ from nonebot.adapters.onebot.v11 import GroupMessageEvent, MessageSegment
 from nonebot.adapters.onebot.v11.permission import GROUP_ADMIN, GROUP_OWNER
 from nonebot.matcher import Matcher
 from nonebot.permission import SUPERUSER
+from nonebot.rule import Rule
 
+from ..config import is_group_allowed
 from ..services import service
+
+
+def _check_group(event: GroupMessageEvent) -> bool:
+    """白名单/黑名单模式下的群过滤规则（见 config.is_group_allowed）。"""
+    return is_group_allowed(event.group_id)
+
+
+_group_rule = Rule(_check_group)
 
 # ---------------------------------------------------------------
 # 命令注册
 # ---------------------------------------------------------------
-add_player_cmd = on_command("添加刀塔玩家", priority=10, block=True)
-list_players_cmd = on_command("查看刀塔玩家", priority=10, block=True)
+add_player_cmd = on_command("添加刀塔玩家", rule=_group_rule, priority=10, block=True)
+list_players_cmd = on_command("查看刀塔玩家", rule=_group_rule, priority=10, block=True)
 delete_player_cmd = on_command(
-    "删除刀塔玩家", priority=10, block=True, permission=GROUP_ADMIN | GROUP_OWNER | SUPERUSER
+    "删除刀塔玩家",
+    rule=_group_rule,
+    priority=10,
+    block=True,
+    permission=GROUP_ADMIN | GROUP_OWNER | SUPERUSER,
 )
-close_broadcast_cmd = on_regex(r"关闭(\S+)的群播报", priority=10, block=True)
-open_broadcast_cmd = on_regex(r"开启(\S+)的群播报", priority=10, block=True)
-d2pt_cmd = on_command("d2pt", aliases={"D2PT"}, priority=10, block=True)
-report_cmd = on_command("战报", priority=10, block=True)
-build_cmd = on_command("出装", priority=10, block=True)
-ti_cmd = on_command("ti", aliases={"TI"}, priority=10, block=True)
-hero_pool_cmd = on_command("英雄池", priority=10, block=True)
-pro_cmd = on_command("pro", aliases={"PRO"}, priority=10, block=True)
+close_broadcast_cmd = on_regex(
+    r"关闭(\S+)的群播报", rule=_group_rule, priority=10, block=True
+)
+open_broadcast_cmd = on_regex(
+    r"开启(\S+)的群播报", rule=_group_rule, priority=10, block=True
+)
+d2pt_cmd = on_command("d2pt", aliases={"D2PT"}, rule=_group_rule, priority=10, block=True)
+report_cmd = on_command("战报", rule=_group_rule, priority=10, block=True)
+build_cmd = on_command("出装", rule=_group_rule, priority=10, block=True)
+ti_cmd = on_command("ti", aliases={"TI"}, rule=_group_rule, priority=10, block=True)
+hero_pool_cmd = on_command("英雄池", rule=_group_rule, priority=10, block=True)
+pro_cmd = on_command("pro", aliases={"PRO"}, rule=_group_rule, priority=10, block=True)
 subscribe_cmd = on_command(
-    "订阅", priority=10, block=True, permission=GROUP_ADMIN | GROUP_OWNER | SUPERUSER
+    "订阅",
+    rule=_group_rule,
+    priority=10,
+    block=True,
+    permission=GROUP_ADMIN | GROUP_OWNER | SUPERUSER,
 )
-help_cmd = on_command("help", aliases={"帮助"}, priority=10, block=True)
+help_cmd = on_command("help", aliases={"帮助"}, rule=_group_rule, priority=10, block=True)
 
 
 def _args(event: GroupMessageEvent) -> list[str]:

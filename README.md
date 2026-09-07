@@ -11,6 +11,7 @@
 - **D2PT 出装**：查询 D2PT 各位置胜率 / 线优数据，以及指定英雄的核心出装图片（支持明暗主题）。
 - **英雄池**：通过 Stratz 数据生成玩家最近比赛的英雄池环形图（含出场占比与位置占比内环）。
 - **播报开关**：按群 / 按玩家开启或关闭播报（昵称填「全体」可一次控制全部）。
+- **群组过滤**：支持白名单 / 黑名单模式，控制插件仅在指定群内生效（指令与播报均受限）。
 
 ## 安装
 
@@ -65,6 +66,10 @@ nonebot.run()
 | `D2W_TIMEOUT`                  | 网络请求超时（秒）                                                                    | `20`       |
 | `D2W_DOWNLOAD_TIMEOUT`         | 下载超时（秒）                                                                      | `60`       |
 | `D2W_GH_PROXY`                 | GitHub 加速前缀（国内访问 GitHub raw 资源时使用，可替换为其它代理）                                | `https://gh-proxy.com` |
+| **群组过滤**                     |                                                                              |            |
+| `D2W_GROUP_MODE`               | 群组生效模式：`all`（所有群生效）/ `whitelist`（仅白名单群生效）/ `blacklist`（黑名单群不生效）          | `all`      |
+| `D2W_GROUP_WHITELIST`          | 白名单群号列表，如 `[123456789, 987654321]`，仅 `whitelist` 模式生效                       | `[]`       |
+| `D2W_GROUP_BLACKLIST`          | 黑名单群号列表，仅 `blacklist` 模式生效；范围外的群不响应任何指令、也不接收播报                          | `[]`       |
 | **播报与内容**                   |                                                                              |            |
 | `D2W_ALL_NICKNAME`             | “全体”播报的昵称关键字                                                                 | `全体`       |
 | `D2W_GAME_MODE`                | 不播报的游戏模式列表                                                                   | `[15, 19]` |
@@ -92,6 +97,7 @@ D2W_GH_PROXY=https://gh-proxy.com
 D2W_TIMEOUT=20
 D2W_TI_ENABLED=false      # 可选：TI 赛事定时任务总开关（默认已关闭），设 true 开启
 D2W_NEWS_ENABLED=true     # 可选：官方新闻定时任务总开关，设 false 彻底关闭以省性能
+D2W_GROUP_MODE=all        # 可选：群组生效模式 all / whitelist / blacklist，配合下面的白/黑名单列表使用
 LOCALSTORE_DATA_DIR=./data     # 可选：数据目录（订阅信息、持久缓存）
 LOCALSTORE_CACHE_DIR=./cache   # 可选：图片/战报等可再生缓存目录
 ```

@@ -43,6 +43,14 @@ class Config(BaseModel):
     # GitHub 加速前缀（国内访问 GitHub raw 资源时使用，可按需替换为其它代理）
     d2w_gh_proxy: str = "https://gh-proxy.com"
 
+    # ===================== 群组过滤 =====================
+    # 群组生效模式：all（所有群生效，默认）/ whitelist（仅白名单群生效）/ blacklist（黑名单群不生效）
+    d2w_group_mode: str = "all"
+    # 白名单群号列表（d2w_group_mode 为 whitelist 时生效，如 [123456789, 987654321]）
+    d2w_group_whitelist: list[int] = []
+    # 黑名单群号列表（d2w_group_mode 为 blacklist 时生效）
+    d2w_group_blacklist: list[int] = []
+
     # ===================== 播报与内容 =====================
     # 如何呼叫全体
     d2w_all_nickname: str = "全体"
@@ -130,6 +138,33 @@ try:
 except Exception:
     # 独立脚本 / 无 NoneBot：忽略 JSON 配置，使用默认值
     pass
+
+# ============================================================
+# 群组过滤（白名单 / 黑名单）
+# ============================================================
+if str(config.d2w_group_mode).strip().lower() not in {"all", "whitelist", "blacklist"}:
+    logger.warning(
+        f"无效的 D2W_GROUP_MODE：{config.d2w_group_mode}，"
+        "仅支持 all / whitelist / blacklist，将按 all 处理"
+    )
+
+
+def is_group_allowed(group_id: int | str) -> bool:
+    """按 d2w_group_mode 判断群是否在插件生效范围内。
+
+    - all（默认）：所有群生效
+    - whitelist：仅 d2w_group_whitelist 列表中的群生效
+    - blacklist：d2w_group_blacklist 列表中的群不生效
+    其它取值按 all 处理。
+    """
+    gid = int(group_id)
+    mode = str(config.d2w_group_mode).strip().lower()
+    if mode == "whitelist":
+        return gid in config.d2w_group_whitelist
+    if mode == "blacklist":
+        return gid not in config.d2w_group_blacklist
+    return True
+
 
 # ============================================================
 # 运行期目录：优先使用 nonebot-plugin-localstore 提供的标准数据/缓存目录，

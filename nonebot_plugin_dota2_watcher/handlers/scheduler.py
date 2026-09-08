@@ -43,6 +43,19 @@ if config.d2w_news_enabled:
 
 
 # ---------------------------------------------------------------
+# 战队名单变动监听（成员加入 / 离开）
+# ---------------------------------------------------------------
+if config.d2w_roster_enabled:
+
+    @scheduler.scheduled_job(
+        "interval", seconds=config.d2w_roster_poll_interval, coalesce=True, max_instances=1
+    )
+    async def watch_roster_changes() -> None:
+        """轮询已订阅战队的登记名单，成员变动时按群播报。"""
+        await service.poll_roster_changes()
+
+
+# ---------------------------------------------------------------
 # 订阅玩家新比赛播报
 # ---------------------------------------------------------------
 @scheduler.scheduled_job(

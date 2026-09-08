@@ -38,6 +38,7 @@ from nonebot.log import logger
 
 from ..config import DATA_DIR
 from ..utils import cache_with_fallback, get_json, load_cache
+from . import pro_names
 from .hero_pool import HeroPoolError, _graphql_post, _RateLimited, _token
 
 # 与 stratz.com peers 页面一致的聚合请求：一次 POST 同时取队友与对手两组全量列表
@@ -372,6 +373,33 @@ def build_report(player_name: str, stats: list[dict]) -> str:
         if st.get("last_match_id"):
             lines[-1] += f" {st['last_match_id']}"
     return "\n".join(lines)
+
+
+async def apply_pro_names(stats: list[dict]) -> None:
+    """用共享的职业选手表统一选手显示名（原地修改 name 字段）。
+
+    STRATZ 与 OpenDota 对同一选手的叫法可能不一致（大小写、空格等），
+    这里统一为 OpenDota 职业选手表中的职业名；查不到时保留原值，不做覆盖。
+    """
+    ids: list[int] = []
+    for st in stats:
+        try:
+            ids.append(int(st["pro_id"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+    if not ids:
+        return
+    try:
+        infos = await pro_names.resolve(ids)
+    except Exception:
+        return
+    for st in stats:
+        try:
+            info = infos.get(int(st["pro_id"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if info and info.get("name"):
+            st["name"] = info["name"]
 
 
 # ============================================================

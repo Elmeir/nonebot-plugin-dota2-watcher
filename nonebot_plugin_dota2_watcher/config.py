@@ -63,10 +63,14 @@ class Config(BaseModel):
     # 总开关：设为 false 时对应定时任务完全不注册、不轮询，零性能开销（彻底关闭）
     d2w_ti_enabled: bool = False
     d2w_news_enabled: bool = True
+    # 战队名单变动订阅总开关；未配置 Steam Key 时即使开启也不会发起请求
+    d2w_roster_enabled: bool = True
     # 各定时任务轮询间隔（秒）
     d2w_ti_poll_interval: int = 10
     d2w_news_poll_interval: int = 60
     d2w_match_poll_interval: int = 60
+    # 战队名单变动轮询间隔（秒，默认 6 小时；转会不频繁，且 Steam 接口限流 1 req/s）
+    d2w_roster_poll_interval: int = 21600
     # 拉取玩家比赛历史时的并发上限（Steam 接口存在速率限制，过大易触发 429/503）
     d2w_history_concurrency: int = 3
 
@@ -219,6 +223,8 @@ OPENDOTA_REQUEST_URL = f"{OPENDOTA_BASE}/api/request/{{match_id}}"
 OPENDOTA_LOGS_URL = f"{OPENDOTA_BASE}/logs/{{job_id}}"
 OPENDOTA_HEROES_URL = f"{OPENDOTA_BASE}/api/constants/heroes"
 OPENDOTA_ITEMS_URL = f"{OPENDOTA_BASE}/api/constants/items"
+# 全量职业选手表（一次拉取约 5000+ 条，含职业名/队伍/头像，免 Key）
+OPENDOTA_PRO_PLAYERS_URL = f"{OPENDOTA_BASE}/api/proPlayers"
 
 # Steam Web API
 STEAM_API_BASE = "https://api.steampowered.com"
@@ -227,6 +233,11 @@ STEAM_MATCH_DETAILS_URL = (
     f"{STEAM_API_BASE}/IDOTA2Match_570/GetMatchDetails/V001/?key={{key}}&match_id={{match_id}}"
 )
 STEAM_LIVE_GAMES_URL = f"{STEAM_API_BASE}/IDOTA2Match_570/GetLiveLeagueGames/v1?key={{key}}"
+# 战队登记名单（player_N_account_id）；注意 start_at_team_id 是游标而非精确匹配，
+# 且响应不含 team_id 字段，只能用 name/tag 校验是否命中
+STEAM_TEAM_INFO_URL = f"{STEAM_API_BASE}/IDOTA2Match_570/GetTeamInfoByTeamID/v001/"
+# 玩家昵称兜底（proPlayers 表里查不到的非职业成员，如教练/替补）
+STEAM_PLAYER_SUMMARIES_URL = f"{STEAM_API_BASE}/ISteamUser/GetPlayerSummaries/v2/"
 STEAM_NEWS_URL = "https://store.steampowered.com/events/ajaxgetpartnereventspageable/?clan_accountid=0&appid=570&offset=0&count=5&l=schinese"
 
 # Valve DOTA2 官网 / CDN

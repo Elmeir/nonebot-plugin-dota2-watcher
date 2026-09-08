@@ -3,6 +3,7 @@
 数据结构：
     {group_id(str): {
         "players": [Player, ...],
+        "teams": [team_id(int), ...],  # 订阅的战队（名单变动播报）
         "subscribe_news": bool,  # 默认 True
         "subscribe_ti": bool,    # 默认 True
     }}
@@ -26,7 +27,7 @@ _loaded = False  # 是否已从磁盘加载过（区分"未加载"与"已加载�
 
 def _new_group() -> dict:
     """创建默认的群数据结构。"""
-    return {"players": [], "subscribe_news": True, "subscribe_ti": True}
+    return {"players": [], "teams": [], "subscribe_news": True, "subscribe_ti": True}
 
 
 def _ensure_dir() -> None:
@@ -48,17 +49,18 @@ def load() -> dict[str, dict]:
             if isinstance(value, list):
                 # 旧格式：{群号: [Player, ...]} → 迁移为新格式
                 migrated = True
-                group = {"players": [], "subscribe_news": True, "subscribe_ti": True}
+                group = _new_group()
                 for info in value:
                     if isinstance(info, dict):
                         group["players"].append(Player.from_dict(info))
                 _data[str(gid)] = group
             elif isinstance(value, dict):
-                # 新格式：{群号: {"players": [...], ...}}
-                group = {"players": [], "subscribe_news": True, "subscribe_ti": True}
+                # 新格式：{群号: {"players": [...], "teams": [...], ...}}
+                group = _new_group()
                 for p_info in value.get("players", []):
                     if isinstance(p_info, dict):
                         group["players"].append(Player.from_dict(p_info))
+                group["teams"] = [int(t) for t in value.get("teams", []) if str(t).isdigit()]
                 group["subscribe_news"] = bool(value.get("subscribe_news", True))
                 group["subscribe_ti"] = bool(value.get("subscribe_ti", True))
                 _data[str(gid)] = group
@@ -80,6 +82,7 @@ def save() -> None:
         for gid, info in _data.items():
             tmp[gid] = {
                 "players": [p.to_dict() for p in info["players"]],
+                "teams": list(info.get("teams", [])),
                 "subscribe_news": info.get("subscribe_news", True),
                 "subscribe_ti": info.get("subscribe_ti", True),
             }
@@ -158,6 +161,48 @@ def delete_player(gid: str, nickname: str) -> str:
                 players.pop(i)
                 return f"已删除玩家 {nickname}"
         return "未找到该玩家"
+
+
+def get_teams(gid: str) -> list[int]:
+    """返回某群订阅的战队 team_id 列表（不存在时注册该群并返回空列表）。"""
+    return load().setdefault(str(gid), _new_group())["teams"]
+
+
+def add_team(gid: str, team_id: int) -> bool:
+    """订阅战队；已订阅返回 False（新增返回 True）。"""
+    with _lock:
+        teams = get_teams(str(gid))
+        tid = int(team_id)
+        if tid in teams:
+            return False
+        teams.append(tid)
+        return True
+
+
+def remove_team(gid: str, team_id: int) -> bool:
+    """取消订阅战队；原本就没订阅返回 False。"""
+    with _lock:
+        teams = get_teams(str(gid))
+        tid = int(team_id)
+        if tid not in teams:
+            return False
+        teams.remove(tid)
+        return True
+
+
+def subscribed_teams(group_filter=None) -> dict[int, list[str]]:
+    """返回 {team_id: [群号, ...]}，供定时任务按队去重轮询。
+
+    group_filter 为可选的群过滤函数（如白/黑名单判断），返回 False 的群会被跳过。
+    """
+    with _lock:
+        result: dict[int, list[str]] = {}
+        for gid, info in load().items():
+            if group_filter is not None and not group_filter(gid):
+                continue
+            for tid in info.get("teams", []) or []:
+                result.setdefault(int(tid), []).append(gid)
+        return result
 
 
 def set_display(gid: str, player_name: str, display: bool) -> str | None:

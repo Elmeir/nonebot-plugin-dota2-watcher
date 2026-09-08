@@ -14,7 +14,7 @@ from nonebot.adapters.onebot.v11 import Message, MessageSegment
 from nonebot.log import logger
 
 from ..config import DATA_DIR, config, is_group_allowed
-from ..datasources import d2pt, pro_peers, ti_results
+from ..datasources import d2pt, pro_names, pro_peers, team_roster, ti_results
 from ..datasources.hero_pool import HeroPoolError
 from ..datasources.pro_peers import ProPeersError
 from ..datasources.request_match import (
@@ -269,6 +269,8 @@ async def pro_report(group_id, arg: str) -> str:
         stats = pro_peers.merge_stats(stratz_stats, od_stats)
         stats = await pro_peers.filter_verified(stats)
         await pro_peers.attach_last_match_ids(steam_id, stats)
+        # 用共享的职业选手表统一显示名（缺失时保留 Stratz 原名）
+        await pro_peers.apply_pro_names(stats)
         return pro_peers.build_report(player_name, stats)
 
     try:
@@ -278,6 +280,84 @@ async def pro_report(group_id, arg: str) -> str:
     except Exception:
         logger.exception("职业选手对战记录查询失败")
         return ""
+
+
+# ---------------------------------------------------------------
+# 战队名单订阅（成员加入 / 离开播报）
+# ---------------------------------------------------------------
+async def add_team(group_id, query: str) -> str:
+    """订阅战队名单变动；返回提示文案。
+
+    query 可为队名/缩写（如 XG、Team Liquid）或 team_id。
+    """
+    team_id = team_roster.resolve_team(query)
+    if team_id is None:
+        return f"未找到战队「{query}」，可输入队名（如 XG、Team Liquid）或 team_id"
+    name = team_roster.team_name(team_id)
+    if not store.add_team(str(group_id), team_id):
+        return f"本群已订阅 {name}"
+    store.save()
+    return f"已订阅 {name}（team_id={team_id}）\n名单变动时将播报成员加入/离开\n" + list_teams(
+        group_id
+    )
+
+
+def list_teams(group_id) -> str:
+    """返回本群订阅战队列表文案。"""
+    teams = store.get_teams(str(group_id))
+    if not teams:
+        return "当前群组没有订阅任何战队"
+    lines = [f"{team_roster.team_name(t)}（{t}）" for t in teams]
+    return "本群订阅战队：\n" + "\n".join(lines)
+
+
+def delete_team(group_id, query: str) -> str:
+    """取消订阅战队；返回提示文案。"""
+    team_id = team_roster.resolve_team(query)
+    if team_id is None:
+        return f"未找到战队「{query}」"
+    name = team_roster.team_name(team_id)
+    if not store.remove_team(str(group_id), team_id):
+        return f"本群未订阅 {name}"
+    store.save()
+    return f"已取消订阅 {name}"
+
+
+async def roster_report(query: str) -> str:
+    """查询战队当前登记名单（文本）。参数解析失败时抛出 ValueError。
+
+    query 为 CN / china / 中国 时返回全部中国战队名单（每队一行、不带选手 ID）。
+    """
+    query = (query or "").strip()
+    key = team_roster.steam_key()
+    if not key:
+        raise ValueError("未配置 Steam Web API Key，无法查询战队名单")
+
+    if team_roster.is_cn_query(query):
+        return await _cn_rosters_report(key)
+
+    team_id = team_roster.resolve_team(query)
+    if team_id is None:
+        raise ValueError(f"未找到战队「{query}」，可输入队名（如 XG）或 team_id")
+    name, members = await team_roster.members(team_id, key)
+    if not members:
+        return f"{name} 暂未在 DOTA 客户端登记阵容"
+    lines = [f"{name} 登记名单（{len(members)}人）："]
+    lines.extend(f"{n}（{aid}）" for aid, n in members)
+    return "\n".join(lines)
+
+
+async def _cn_rosters_report(key: str) -> str:
+    """全部中国战队的名单：每队一行，成员间用顿号连接（不带选手 ID）。"""
+    lines = ["中国战队名单："]
+    for team_id in team_roster.CN_TEAMS:
+        name, members = await team_roster.members(team_id, key)
+        if not members:
+            lines.append(f"{name}：暂未登记阵容")
+            continue
+        joined = "、".join(n for _, n in members)
+        lines.append(f"{name}（{len(members)}人）：{joined}")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------
@@ -303,6 +383,24 @@ async def _broadcast(text: str | None, filter_key: str | None = None) -> None:
                 await bot.send_group_msg(group_id=int(gid), message=msg)
             except Exception:
                 logger.exception(f"广播消息到群 {gid} 失败")
+
+
+async def _broadcast_groups(text: str | None, gids) -> None:
+    """向指定的若干群广播一条文本消息（用于按战队订阅关系定向播报）。"""
+    if not text:
+        return
+    bots = get_bots()
+    if not bots:
+        return
+    msg = Message(f"[DOTA2]{text}")
+    for gid in gids:
+        if not is_group_allowed(gid):
+            continue
+        for bot in bots.values():
+            try:
+                await bot.send_group_msg(group_id=int(gid), message=msg)
+            except Exception:
+                logger.exception(f"广播战队名单变动到群 {gid} 失败")
 
 
 async def _fetch_history(player: Player) -> int | None:
@@ -508,3 +606,64 @@ async def poll_new_matches() -> None:
 
     if changed:
         store.save()
+
+
+def _roster_change_message(team: str, added: list[int], removed: list[int], names: dict) -> str:
+    """拼装名单变动播报文案。names 为 {account_id: 显示名}。
+
+    added / removed 需已按最近比赛时间降序排好（与 /阵容 展示顺序一致）。
+    """
+    parts = []
+    if added:
+        parts.append("加入：" + "、".join(names.get(i, str(i)) for i in added))
+    if removed:
+        parts.append("离开：" + "、".join(names.get(i, str(i)) for i in removed))
+    if not parts:
+        return ""
+    return f"{team} 名单变动\n" + "\n".join(parts)
+
+
+async def poll_roster_changes() -> None:
+    """轮询已订阅战队的登记名单，成员加入/离开时向订阅群播报。
+
+    首次观察到某支队伍只建立基线、不播报（与新闻/TI 播报一致）；
+    名单来源为 Valve 客户端登记值，含替补/教练，且存在跨队残留，故"离开"可能滞后。
+    """
+    # 按队聚合订阅群，同一支队伍只拉取一次；白/黑名单外的群不参与
+    subs = store.subscribed_teams(is_group_allowed)
+    if not subs:
+        return
+    key = team_roster.steam_key()
+    if not key:
+        return
+
+    state = team_roster.load_state()
+    teams_state = state["teams"]
+    changed = False
+    for team_id in sorted(subs):
+        try:
+            info = await team_roster.fetch_team(team_id, key)
+        except Exception:
+            logger.warning(f"战队 {team_id} 名单拉取失败")
+            continue
+        if not info:
+            continue
+        prev = teams_state.get(str(team_id))
+        if prev is None:
+            # 首次观察：仅建立基线，避免订阅瞬间补播历史名单
+            teams_state[str(team_id)] = {"name": info["name"], "ids": info["ids"]}
+            changed = True
+            continue
+        old_ids = set(prev.get("ids") or [])
+        new_ids = set(info["ids"])
+        if old_ids == new_ids:
+            continue
+        added, removed = new_ids - old_ids, old_ids - new_ids
+        teams_state[str(team_id)] = {"name": info["name"], "ids": info["ids"]}
+        changed = True
+        names = await pro_names.display_names(ids=sorted(added | removed))
+        msg = _roster_change_message(info["name"], sorted(added), sorted(removed), names)
+        if msg:
+            await _broadcast_groups(msg, subs[team_id])
+    if changed:
+        team_roster.save_state(state)

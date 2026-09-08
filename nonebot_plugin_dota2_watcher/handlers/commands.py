@@ -45,6 +45,16 @@ report_cmd = on_command("战报", rule=_group_rule, priority=10, block=True)
 build_cmd = on_command("出装", rule=_group_rule, priority=10, block=True)
 ti_cmd = on_command("ti", aliases={"TI"}, rule=_group_rule, priority=10, block=True)
 hero_pool_cmd = on_command("英雄池", rule=_group_rule, priority=10, block=True)
+add_team_cmd = on_command("添加刀塔战队", rule=_group_rule, priority=10, block=True)
+list_teams_cmd = on_command("查看刀塔战队", rule=_group_rule, priority=10, block=True)
+delete_team_cmd = on_command(
+    "删除刀塔战队",
+    rule=_group_rule,
+    priority=10,
+    block=True,
+    permission=GROUP_ADMIN | GROUP_OWNER | SUPERUSER,
+)
+roster_cmd = on_command("阵容", rule=_group_rule, priority=10, block=True)
 pro_cmd = on_command("pro", aliases={"PRO"}, rule=_group_rule, priority=10, block=True)
 subscribe_cmd = on_command(
     "订阅",
@@ -225,6 +235,44 @@ async def handle_pro(event: GroupMessageEvent):
     if text:
         await pro_cmd.finish(text)
     await pro_cmd.finish("职业选手对战记录查询失败")
+
+
+# ---------------------------------------------------------------
+# 战队名单订阅：添加 / 查看 / 删除
+# ---------------------------------------------------------------
+@add_team_cmd.handle()
+async def handle_add_team(event: GroupMessageEvent):
+    args = _args(event)
+    if len(args) != 1:
+        await add_team_cmd.finish(
+            "请输入：/添加刀塔战队 [队名或 team_id]\n如：/添加刀塔战队 XG"
+        )
+    await add_team_cmd.finish(await service.add_team(event.group_id, args[0]))
+
+
+@list_teams_cmd.handle()
+async def handle_list_teams(event: GroupMessageEvent):
+    await list_teams_cmd.finish(service.list_teams(event.group_id))
+
+
+@delete_team_cmd.handle()
+async def handle_delete_team(event: GroupMessageEvent):
+    args = _args(event)
+    if len(args) != 1:
+        await delete_team_cmd.finish("请输入：/删除刀塔战队 [队名或 team_id]")
+    await delete_team_cmd.finish(service.delete_team(event.group_id, args[0]))
+
+
+@roster_cmd.handle()
+async def handle_roster(event: GroupMessageEvent):
+    args = _args(event)
+    if len(args) != 1:
+        await roster_cmd.finish("请输入：/阵容 [队名或 team_id 或 CN]\n如：/阵容 XG、/阵容 CN")
+    try:
+        text = await service.roster_report(args[0])
+    except ValueError as e:
+        await roster_cmd.finish(str(e))
+    await roster_cmd.finish(text or "未查询到该战队名单")
 
 
 # ---------------------------------------------------------------

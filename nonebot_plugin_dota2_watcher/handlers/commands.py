@@ -54,7 +54,7 @@ delete_team_cmd = on_command(
     block=True,
     permission=GROUP_ADMIN | GROUP_OWNER | SUPERUSER,
 )
-roster_cmd = on_command("阵容", rule=_group_rule, priority=10, block=True)
+roster_cmd = on_command("战队", rule=_group_rule, priority=10, block=True)
 pro_cmd = on_command("pro", aliases={"PRO"}, rule=_group_rule, priority=10, block=True)
 subscribe_cmd = on_command(
     "订阅",
@@ -267,7 +267,7 @@ async def handle_delete_team(event: GroupMessageEvent):
 async def handle_roster(event: GroupMessageEvent):
     args = _args(event)
     if len(args) != 1:
-        await roster_cmd.finish("请输入：/阵容 [队名或 team_id 或 CN]\n如：/阵容 XG、/阵容 CN")
+        await roster_cmd.finish("请输入：/战队 [队名或 team_id 或 CN]\n如：/战队 XG、/战队 CN")
     try:
         text = await service.roster_report(args[0])
     except ValueError as e:
@@ -323,6 +323,8 @@ _HELP_TEXT = (
     "/ti [小组赛|正赛]：TI 赛事战报图片（默认最新阶段）\n"
     "/英雄池 [steam_id 或 玩家昵称]：生成英雄池环形图\n"
     "/pro [steam_id 或 玩家昵称]：与职业选手的对战记录\n"
+    "/添加刀塔战队 [队名或 team_id 或 CN]：订阅战队（CN 一键订阅全部中国战队）\n"
+    "/战队 [队名或 team_id 或 CN]：查询战队当前登记名单\n"
     "/订阅：查看订阅状态（总开关与本群开关）\n"
     "/订阅 新闻|ti [开|关]：切换或指定开、关订阅（管理员以上）"
 )

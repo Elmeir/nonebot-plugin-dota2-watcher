@@ -288,8 +288,11 @@ async def pro_report(group_id, arg: str) -> str:
 async def add_team(group_id, query: str) -> str:
     """订阅战队名单变动；返回提示文案。
 
-    query 可为队名/缩写（如 XG、Team Liquid）或 team_id。
+    query 可为队名/缩写（如 XG、Team Liquid）、team_id，或 CN / china / 中国
+    （一键订阅全部中国战队）。
     """
+    if team_roster.is_cn_query(query):
+        return await add_cn_teams(group_id)
     team_id = team_roster.resolve_team(query)
     if team_id is None:
         return f"未找到战队「{query}」，可输入队名（如 XG、Team Liquid）或 team_id"
@@ -309,6 +312,18 @@ def list_teams(group_id) -> str:
         return "当前群组没有订阅任何战队"
     lines = [f"{team_roster.team_name(t)}（{t}）" for t in teams]
     return "本群订阅战队：\n" + "\n".join(lines)
+
+
+async def add_cn_teams(group_id) -> str:
+    """一键订阅全部中国战队（CN_TEAMS）；返回提示文案。"""
+    added = [team_roster.team_name(t) for t in team_roster.CN_TEAMS if store.add_team(str(group_id), t)]
+    if added:
+        store.save()
+        return (
+            f"已订阅 {len(added)} 支中国战队：{'、'.join(added)}\n"
+            "名单变动时将播报成员加入/离开\n" + list_teams(group_id)
+        )
+    return "本群已订阅全部中国战队\n" + list_teams(group_id)
 
 
 def delete_team(group_id, query: str) -> str:
@@ -611,7 +626,7 @@ async def poll_new_matches() -> None:
 def _roster_change_message(team: str, added: list[int], removed: list[int], names: dict) -> str:
     """拼装名单变动播报文案。names 为 {account_id: 显示名}。
 
-    added / removed 需已按最近比赛时间降序排好（与 /阵容 展示顺序一致）。
+    added / removed 需已按最近比赛时间降序排好（与 /战队 展示顺序一致）。
     """
     parts = []
     if added:

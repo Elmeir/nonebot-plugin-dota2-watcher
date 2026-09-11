@@ -77,7 +77,7 @@ TEAM_ABBRS: dict[int, str] = {
     10007878: "TR",
 }
 
-# 中国赛区战队集合（/阵容 CN 按此顺序输出：XG、YB、VG、LGD、RES、TR）
+# 中国赛区战队集合（/战队 CN 按此顺序输出：XG、YB、VG、LGD、RES、TR）
 CN_TEAMS: tuple[int, ...] = (
     8261500,   # Xtreme Gaming
     9351740,   # Yakult Brothers
@@ -107,7 +107,7 @@ def team_name(team_id: int) -> str:
 
 
 def is_cn_query(query: str) -> bool:
-    """是否为「中国战队」查询（/阵容 CN / china / 中国）。"""
+    """是否为「中国战队」查询（CN / china / 中国，用于 /战队 与 /添加刀塔战队）。"""
     return (query or "").strip().lower() in {"cn", "china", "中国"}
 
 

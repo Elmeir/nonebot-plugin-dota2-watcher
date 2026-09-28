@@ -107,7 +107,7 @@ def team_name(team_id: int) -> str:
 
 
 def is_cn_query(query: str) -> bool:
-    """是否为「中国战队」查询（CN / china / 中国，用于 /战队 与 /添加刀塔战队）。"""
+    """是否为「中国战队」查询（CN / china / 中国，用于 /战队 与 /添加刀塔战队、/删除刀塔战队）。"""
     return (query or "").strip().lower() in {"cn", "china", "中国"}
 
 

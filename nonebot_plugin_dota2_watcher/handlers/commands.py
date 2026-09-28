@@ -259,7 +259,7 @@ async def handle_list_teams(event: GroupMessageEvent):
 async def handle_delete_team(event: GroupMessageEvent):
     args = _args(event)
     if len(args) != 1:
-        await delete_team_cmd.finish("请输入：/删除刀塔战队 [队名或 team_id]")
+        await delete_team_cmd.finish("请输入：/删除刀塔战队 [队名或 team_id 或 CN]")
     await delete_team_cmd.finish(service.delete_team(event.group_id, args[0]))
 
 
@@ -324,6 +324,8 @@ _HELP_TEXT = (
     "/英雄池 [steam_id 或 玩家昵称]：生成英雄池环形图\n"
     "/pro [steam_id 或 玩家昵称]：与职业选手的对战记录\n"
     "/添加刀塔战队 [队名或 team_id 或 CN]：订阅战队（CN 一键订阅全部中国战队）\n"
+    "/查看刀塔战队：列出本群订阅战队\n"
+    "/删除刀塔战队 [队名或 team_id 或 CN]：取消订阅战队（管理员以上，CN 一键取消全部中国战队）\n"
     "/战队 [队名或 team_id 或 CN]：查询战队当前登记名单\n"
     "/订阅：查看订阅状态（总开关与本群开关）\n"
     "/订阅 新闻|ti [开|关]：切换或指定开、关订阅（管理员以上）"

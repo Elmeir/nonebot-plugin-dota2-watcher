@@ -327,7 +327,13 @@ async def add_cn_teams(group_id) -> str:
 
 
 def delete_team(group_id, query: str) -> str:
-    """取消订阅战队；返回提示文案。"""
+    """取消订阅战队；返回提示文案。
+
+    query 可为队名/缩写（如 XG、Team Liquid）、team_id，或 CN / china / 中国
+    （一键取消订阅全部中国战队）。
+    """
+    if team_roster.is_cn_query(query):
+        return delete_cn_teams(group_id)
     team_id = team_roster.resolve_team(query)
     if team_id is None:
         return f"未找到战队「{query}」"
@@ -336,6 +342,21 @@ def delete_team(group_id, query: str) -> str:
         return f"本群未订阅 {name}"
     store.save()
     return f"已取消订阅 {name}"
+
+
+def delete_cn_teams(group_id) -> str:
+    """一键取消订阅全部中国战队（CN_TEAMS）；返回提示文案。"""
+    removed = [
+        team_roster.team_name(t)
+        for t in team_roster.CN_TEAMS
+        if store.remove_team(str(group_id), t)
+    ]
+    if removed:
+        store.save()
+        return f"已取消订阅 {len(removed)} 支中国战队：{'、'.join(removed)}\n" + list_teams(
+            group_id
+        )
+    return "本群未订阅任何中国战队\n" + list_teams(group_id)
 
 
 async def roster_report(query: str) -> str:

@@ -13,7 +13,7 @@ from nonebot import get_bots
 from nonebot.adapters.onebot.v11 import Message, MessageSegment
 from nonebot.log import logger
 
-from ..config import DATA_DIR, config, is_group_allowed
+from ..config import DATA_DIR, config, is_group_allowed, normalize_image_theme
 from ..datasources import d2pt, pro_names, pro_peers, team_roster, ti_results
 from ..datasources.hero_pool import HeroPoolError
 from ..datasources.playmates import PlaymatesError
@@ -164,8 +164,12 @@ async def report_image(match_id: str) -> str:
     return await run_single_flight(("report", match_id), _build)
 
 
-async def build_image(hero: str, position=None, theme: str = "light") -> str:
-    """生成核心出装图片，返回本地路径；失败返回空串。相同参数的并发查询共享同一次执行。"""
+async def build_image(hero: str, position=None, theme: str | None = None) -> str:
+    """生成核心出装图片，返回本地路径；失败返回空串。相同参数的并发查询共享同一次执行。
+
+    theme 留空时使用配置项 d2w_image_theme（默认 light）。
+    """
+    theme = normalize_image_theme(theme)
 
     async def _build() -> str:
         try:
@@ -207,11 +211,12 @@ _HERO_POOL_SIZES = {
 }
 
 
-async def hero_pool_image(group_id, arg: str, size: str = "") -> str:
+async def hero_pool_image(group_id, arg: str, size: str = "", theme: str | None = None) -> str:
     """生成玩家英雄池环形图，返回本地图片路径。
 
     arg 可为 steam_id（纯数字）或本群已订阅玩家昵称；
-    size 为比赛数量档位（min/mid/max 或 小/中/大，留空默认 25 场）。
+    size 为比赛数量档位（min/mid/max 或 小/中/大，留空默认 25 场）；
+    theme 留空时使用配置项 d2w_image_theme（默认 light）。
     参数解析失败 / 未配置 Token 时抛出 ValueError（提示文案），生成失败返回空串。
     """
     arg = arg.strip()
@@ -229,18 +234,19 @@ async def hero_pool_image(group_id, arg: str, size: str = "") -> str:
             f"未找到昵称为「{arg}」的订阅玩家，请先用 /添加刀塔玩家 订阅，或直接输入 steam_id"
         )
     count = _HERO_POOL_SIZES.get(size.strip().lower(), 25)
+    theme = normalize_image_theme(theme)
 
     async def _build() -> str:
         try:
-            return await hero_pool.generate_image(steam_id, count=count) or ""
+            return await hero_pool.generate_image(steam_id, count=count, theme=theme) or ""
         except HeroPoolError as e:
             raise ValueError(str(e))
         except Exception:
             logger.exception("英雄池生成失败")
             return ""
 
-    # 相同账号 + 相同档位的并发查询共享同一次执行
-    return await run_single_flight(("hero_pool", steam_id, count), _build)
+    # 相同账号 + 相同档位 + 相同风格的并发查询共享同一次执行
+    return await run_single_flight(("hero_pool", steam_id, count, theme), _build)
 
 
 async def pro_report(group_id, arg: str) -> str:
@@ -284,14 +290,16 @@ async def pro_report(group_id, arg: str) -> str:
         return ""
 
 
-async def playmates_image(group_id, arg: str, theme: str = "light") -> str:
+async def playmates_image(group_id, arg: str, theme: str | None = None) -> str:
     """生成玩家开黑记录图片（最常一起开黑的队友，按共同场次降序取前 20）。
 
     arg 可为 steam_id（纯数字）或本群已订阅玩家昵称；
+    theme 留空时使用配置项 d2w_image_theme（默认 light）。
     参数解析失败 / 未配置 Token 时抛出 ValueError（提示文案），生成失败返回空串。
     相同账号的并发查询通过 single-flight 共享同一次执行（不重复抓取）。
     """
     arg = arg.strip()
+    theme = normalize_image_theme(theme)
     # 优先按昵称匹配，因为昵称可能是数字，会与 steam_id 混淆
     player = next(
         (p for p in store.get_group(str(group_id)) if p.nickname == arg),

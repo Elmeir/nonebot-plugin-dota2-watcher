@@ -157,11 +157,12 @@ async def handle_build(event: GroupMessageEvent):
     args = _args(event)
     if not args:
         await build_cmd.finish("请输入：/出装 [英雄名] [位置(数字)] [dark|light]")
-    hero, position, theme = args[0], None, "light"
+    hero, position, theme = args[0], None, None
     if len(args) >= 2 and args[1] in "12345":
         position = args[1]
         if len(args) >= 3:
-            theme = "dark" if args[2] == "dark" else "light"
+            # 风格留空 / 非法时由 config.normalize_image_theme 回退到 d2w_image_theme
+            theme = args[2]
     elif len(args) >= 2:
         await build_cmd.finish("位置参数无效，请输入 1-5")
     if path := await service.build_image(hero, position, theme):
@@ -246,7 +247,7 @@ async def handle_playmates(event: GroupMessageEvent):
     args = _args(event)
     if not (1 <= len(args) <= 2):
         await playmates_cmd.finish("请输入：/开黑 [steam_id 或 玩家昵称] [dark|light]")
-    theme = "light"
+    theme = None
     if len(args) == 2:
         if args[1].strip().lower() not in ("dark", "light"):
             await playmates_cmd.finish("风格参数无效，请输入 dark 或 light")
@@ -352,7 +353,8 @@ _HELP_TEXT = (
     "/删除刀塔战队 [队名或 team_id 或 CN]：取消订阅战队（管理员以上，CN 一键取消全部中国战队）\n"
     "/战队 [队名或 team_id 或 CN]：查询战队当前登记名单\n"
     "/订阅：查看订阅状态（总开关与本群开关）\n"
-    "/订阅 新闻|ti [开|关]：切换或指定开、关订阅（管理员以上）"
+    "/订阅 新闻|ti [开|关]：切换或指定开、关订阅（管理员以上）\n"
+    "图片风格默认由配置项 D2W_IMAGE_THEME 决定（light / dark）"
 )
 
 

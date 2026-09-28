@@ -6,7 +6,8 @@
 图标；中心洞内显示玩家 steam 头像（圆形裁切），玩家名以带黑色描边的纯色文字
 按圆弧排在空环带上（自动缩字号、必要时截断）。
 
-默认使用亮色主题（THEME="light"），可改为 "dark" 切回暗色。
+默认使用亮色主题，由配置项 d2w_image_theme 统一决定（见 config.normalize_image_theme），
+生成函数也接受 theme 参数临时覆盖。
 数据来源见 ../datasources/hero_pool.py。
 """
 
@@ -18,7 +19,7 @@ from collections.abc import Sequence
 
 from nonebot.log import logger
 
-from ..config import OUTPUT_DIR
+from ..config import OUTPUT_DIR, normalize_image_theme
 from ..datasources import hero_pool as ds
 
 SCALE = 2  # 分辨率倍率
@@ -33,7 +34,9 @@ ICON_RADIUS = 130 * SCALE  # 头像中心所在半径（环带中部）
 # ============================================================
 # 主题配置：亮色（默认）/ 暗色
 # ============================================================
-THEME = "light"  # 默认主题，改为 "dark" 可切回暗色
+# 主题不再由本模块常量决定，统一由配置项 d2w_image_theme 提供默认值
+# （见 config.normalize_image_theme），生成函数也接受 theme 参数临时覆盖。
+DEFAULT_THEME = "light"
 
 # 环心内环带（模仿 STRATZ 中间内环：真环形 + 描边），按 position 占比
 # Stratz 320 坐标下内环外半径 84、内半径 37（环带宽 47，中间是洞）。
@@ -336,7 +339,7 @@ def _hsl_hex(h: float, s: float, light: float) -> str:
     return f"#{r:02X}{g:02X}{b:02X}"
 
 
-async def _hero_gradient(short: str) -> tuple[str, str] | None:
+async def _hero_gradient(short: str, theme: str = DEFAULT_THEME) -> tuple[str, str] | None:
     """从英雄头像生成环带渐变 (stop0, stop1)：中心亮、外缘暗、同色系。
 
     图标不可用 / 提取失败时返回 None（此时扇区按普通灰色绘制）。
@@ -347,13 +350,15 @@ async def _hero_gradient(short: str) -> tuple[str, str] | None:
         return None
     h, s, _ = base
     s = min(1.0, max(0.35, s * 1.5))  # 适当提高饱和度，让环带更鲜明
-    th = THEMES[THEME]
+    th = THEMES[theme]
     return _hsl_hex(h, s, th["grad_center_light"]), _hsl_hex(h, s, th["grad_edge_light"])
 
 
-async def build_hero_gradients(stats: list[dict]) -> list[tuple[str, str] | None]:
+async def build_hero_gradients(
+    stats: list[dict], theme: str = DEFAULT_THEME
+) -> list[tuple[str, str] | None]:
     """为排行前三的英雄从头像生成环带渐变；图标不可用/提取失败的项为 None。"""
-    return [await _hero_gradient(item["short"]) for item in stats[:3]]
+    return [await _hero_gradient(item["short"], theme) for item in stats[:3]]
 
 
 # ============================================================
@@ -617,7 +622,9 @@ def _icon_fill_color(fill) -> tuple[int, int, int]:
     return _color_rgb(c)
 
 
-def _draw_position_icon(canvas, pos: PositionKey, ix: float, iy: float, size: float) -> None:
+def _draw_position_icon(
+    canvas, pos: PositionKey, ix: float, iy: float, size: float, theme: str = DEFAULT_THEME
+) -> None:
     """在 (ix,iy) 处以 size 尺寸绘制内环位置图标（24x24 viewBox 按比例缩放）。
 
     每个路径用「偶奇规则」合并子路径生成遮罩（正确处理问号圆环的内孔），
@@ -625,7 +632,7 @@ def _draw_position_icon(canvas, pos: PositionKey, ix: float, iy: float, size: fl
     """
     from PIL import Image, ImageChops, ImageDraw
 
-    icons = THEMES[THEME]["icons"]
+    icons = THEMES[theme]["icons"]
     for d, fill_key, op in _ICON_PATHS.get(pos, []):
         color = _icon_fill_color(icons[fill_key])
         polys = _svg_path_polys(d)
@@ -795,6 +802,7 @@ async def render_png(
     hero_gradients: Sequence[tuple[str, str] | None] = (),
     player_name: str = "",
     avatar_url: str = "",
+    theme: str = DEFAULT_THEME,
 ) -> None:
     """用 Pillow 直接渲染 PNG 环形图（无 numpy 依赖）。"""
     from PIL import Image, ImageDraw
@@ -802,7 +810,7 @@ async def render_png(
     size = 320 * SCALE
     W = size * SS
 
-    th = THEMES[THEME]
+    th = THEMES[theme]
     bg = tuple(int(th["bg"][i : i + 2], 16) for i in (1, 3, 5))
     stroke_rgb = _color_rgb(th["stroke"])
     cx, cy, ro, ri, ric = CX * SS, CY * SS, R_OUT * SS, R_IN * SS, ICON_RADIUS * SS
@@ -909,7 +917,7 @@ async def render_png(
     # 位置图标绘制在描边之上
     for imid, pos, isz in i_icons:
         ix, iy = _pl(imid, i_icon_r)
-        _draw_position_icon(canvas, pos, ix, iy, isz)
+        _draw_position_icon(canvas, pos, ix, iy, isz, theme)
 
     # 头像：放在对应扇区中心（逆时针 mid 角）。
     # 先并发预取所有头像，避免首次渲染时逐个串行下载造成长时间等待。
@@ -953,11 +961,13 @@ async def render_png(
     canvas.convert("RGB").save(out_path, "PNG")
 
 
-async def generate_image(steam_id, count=25, refresh=False) -> str:
+async def generate_image(steam_id, count=25, refresh=False, theme: str | None = None) -> str:
     """拉取玩家英雄池数据并渲染 PNG 环形图，返回本地路径。
 
+    theme 留空时使用配置项 d2w_image_theme（默认 'light'）。
     数据抓取/渲染失败时抛 ds.HeroPoolError（供上层转为用户提示）。
     """
+    theme = normalize_image_theme(theme)
     player_name, avatar_url, matches = await ds.fetch_matches(
         steam_id, count=count, refresh=refresh
     )
@@ -967,13 +977,21 @@ async def generate_image(steam_id, count=25, refresh=False) -> str:
     stats = ds.build_stats(matches)
     total = sum(item["count"] for item in stats)
     pos_dist = ds.pos_distribution(matches)
-    hero_gradients = await build_hero_gradients(stats)
+    hero_gradients = await build_hero_gradients(stats, theme)
 
     logger.info(f"生成英雄池：{player_name}（{steam_id}）共 {total} 场、{len(stats)} 名英雄")
 
-    out_path = OUTPUT_DIR / f"hero_pool_{steam_id}.png"
+    # 文件名带上风格，避免切换 d2w_image_theme 后仍命中另一风格的旧缓存图
+    out_path = OUTPUT_DIR / f"hero_pool_{steam_id}_{theme}.png"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     await render_png(
-        stats, total, out_path, pos_dist, hero_gradients, player_name, avatar_url=avatar_url
+        stats,
+        total,
+        out_path,
+        pos_dist,
+        hero_gradients,
+        player_name,
+        avatar_url=avatar_url,
+        theme=theme,
     )
     return str(out_path)

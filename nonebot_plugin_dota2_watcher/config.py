@@ -2,7 +2,7 @@
 
 - `Config`：NoneBot 用户可配置项，默认值在包内；用户配置优先从数据目录下的
   `config.json` 读取（首次运行自动生成），其次才是 `D2W_` 前缀的环境变量 / `.env`
-  （例如 `D2W_STEAM_API_KEY`、`D2W_PROXIES`、`D2W_GH_PROXY`）。
+  （例如 `D2W_STEAM_API_KEY`、`D2W_PROXIES`、`D2W_GH_PROXY`、`D2W_IMAGE_THEME`）。
   包内只保存默认值，用户无需（也不应）直接修改本文件，避免升级插件时配置被覆盖。
 - 文件后半部分：运行期目录、数据源 URL 等常量；运行期数据/缓存目录由
   nonebot-plugin-localstore 提供（可用 `LOCALSTORE_DATA_DIR` / `LOCALSTORE_CACHE_DIR` 覆盖），
@@ -58,6 +58,11 @@ class Config(BaseModel):
     d2w_game_mode: list[int] = [15, 19]
     # 评分标准（0~1），仅 openDota 支持
     d2w_benchmark_threshold: float = 0.5
+
+    # ===================== 图片风格 =====================
+    # 图片生成风格统一默认值：light（亮色）/ dark（暗色）
+    # 作用于 /出装、/开黑、/英雄池；命令上的 dark|light 参数可临时覆盖本项
+    d2w_image_theme: str = "light"
 
     # ===================== 定时任务 =====================
     # 总开关：设为 false 时对应定时任务完全不注册、不轮询，零性能开销（彻底关闭）
@@ -152,6 +157,11 @@ if str(config.d2w_group_mode).strip().lower() not in {"all", "whitelist", "black
         "仅支持 all / whitelist / blacklist，将按 all 处理"
     )
 
+if str(config.d2w_image_theme).strip().lower() not in {"light", "dark"}:
+    logger.warning(
+        f"无效的 D2W_IMAGE_THEME：{config.d2w_image_theme}，仅支持 light / dark，将按 light 处理"
+    )
+
 
 def is_group_allowed(group_id: int | str) -> bool:
     """按 d2w_group_mode 判断群是否在插件生效范围内。
@@ -168,6 +178,19 @@ def is_group_allowed(group_id: int | str) -> bool:
     if mode == "blacklist":
         return gid not in config.d2w_group_blacklist
     return True
+
+
+def normalize_image_theme(theme: str | None = None) -> str:
+    """把图片风格统一规范为 'light' / 'dark'。
+
+    传入空值或非法值时回退到配置项 d2w_image_theme（本身非法时回退 'light'），
+    因此命令参数只需传入用户输入，无需自行兜底。
+    """
+    value = str(theme or "").strip().lower()
+    if value in {"light", "dark"}:
+        return value
+    fallback = str(config.d2w_image_theme or "").strip().lower()
+    return fallback if fallback in {"light", "dark"} else "light"
 
 
 # ============================================================

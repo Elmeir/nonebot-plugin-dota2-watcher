@@ -18,7 +18,7 @@ import time
 
 from nonebot.log import logger
 
-from ..config import OUTPUT_DIR, config
+from ..config import OUTPUT_DIR, config, normalize_image_theme
 from ..datasources import playmates as ds
 from ..datasources.hero_pool import load_avatar_img
 from . import shared_browser
@@ -98,7 +98,7 @@ def build_html(
     rows: list[dict],
     avatar_uris: list[str],
     player_avatar_uri: str = "",
-    theme: dict = THEME_DARK,
+    theme: dict = THEME_LIGHT,
     total_count: int | None = None,
 ) -> str:
     """构建完整的开黑记录 HTML 页面。
@@ -160,15 +160,17 @@ def build_html(
     return html
 
 
-async def generate_image(steam_id, theme: str = "light", refresh: bool = False) -> str:
+async def generate_image(steam_id, theme: str | None = None, refresh: bool = False) -> str:
     """拉取开黑记录并渲染 PNG，返回本地图片路径。
 
+    theme 留空时使用配置项 d2w_image_theme（默认 'light'）。
     数据抓取失败时抛 ds.PlaymatesError（供上层转为用户提示）。
     """
     player_name, player_avatar, rows = await ds.fetch_playmates(steam_id)
     if not rows:
         raise ds.PlaymatesError(f"未查询到 {player_name} 的开黑记录")
 
+    theme = normalize_image_theme(theme)
     top = rows[: ds.OUTPUT_LIMIT]
     avatar_uris = [await _avatar_data_uri(r.get("avatar") or "") for r in top]
     player_avatar_uri = await _avatar_data_uri(player_avatar)
@@ -178,7 +180,8 @@ async def generate_image(steam_id, theme: str = "light", refresh: bool = False) 
         player_name, top, avatar_uris, player_avatar_uri, theme_dict, total_count=len(rows)
     )
 
-    out_path = os.path.join(OUTPUT_DIR, f"playmates_{int(steam_id)}.png")
+    # 文件名带上风格，避免切换 d2w_image_theme 后仍命中另一风格的旧缓存图
+    out_path = os.path.join(OUTPUT_DIR, f"playmates_{int(steam_id)}_{theme}.png")
 
     # 图片缓存：缓存期内复用已生成的图片，避免重复渲染
     if (

@@ -620,7 +620,7 @@ def _section_block(title_html, rows_html, gap="0.375rem"):
     )
 
 
-async def build_item_card(item, theme=THEME_DARK, show_time=True, show_core=True, stretch=False):
+async def build_item_card(item, theme=THEME_LIGHT, show_time=True, show_core=True, stretch=False):
     """构建单个物品卡片 HTML，完全照抄网页 div 结构。
 
     stretch=True 时卡片按 6 格网格固定宽度（与天赋/加点对齐），不足 6 格也保持相同列位。
@@ -922,7 +922,7 @@ async def build_html(
     hero_name_cn,
     pos_num,
     core_items,
-    theme=THEME_DARK,
+    theme=THEME_LIGHT,
     start_items=None,
     lategame_inventories=None,
     win_rate=None,
@@ -1068,7 +1068,7 @@ async def generate_image(
     position=None,
     output_path=None,
     device_scale_factor=1,
-    theme="light",
+    theme=None,
     supersample=2,
 ):
     """通过 Playwright 渲染 HTML 生成图片。
@@ -1086,8 +1086,9 @@ async def generate_image(
         输出图片路径。为空时自动生成。
     device_scale_factor : float
         设备缩放倍率，默认 1（不缩放，内容尺寸已通过 rem 放大 2 倍）。
-    theme : str
-        颜色风格，'dark'（暗色）或 'light'（亮色），默认 'light'。
+    theme : str | None
+        颜色风格，'dark'（暗色）或 'light'（亮色）；留空时使用配置项
+        d2w_image_theme（默认 'light'）。
     supersample : int
         超采样倍率，>1 时以 device_scale_factor×supersample 渲染再 Lanczos 降采样，
         提升边缘/文字锐度；设为 1 关闭超采样。默认 2。
@@ -1180,7 +1181,8 @@ async def generate_image(
     # 核心出装胜率
     core_win_rate = pos_data.get("wr")
 
-    theme_dict = THEMES.get(theme, THEME_DARK)
+    theme = _cfg.normalize_image_theme(theme)
+    theme_dict = THEMES.get(theme, THEME_LIGHT)
     # build_html 内部含技能/物品图标缺失时的按需异步下载
     html = await build_html(
         hero_name_cn,
@@ -1197,7 +1199,8 @@ async def generate_image(
     if not output_path:
         safe_hero = hero_name.replace(" ", "-")
         safe_pos = position.replace(" ", "_")
-        output_path = os.path.join(OUTPUT_DIR, f"{safe_hero}_{safe_pos}.png")
+        # 文件名带上风格，避免切换 d2w_image_theme 后仍命中另一风格的旧缓存图
+        output_path = os.path.join(OUTPUT_DIR, f"{safe_hero}_{safe_pos}_{theme}.png")
 
     # 图片缓存：缓存期内（默认 24 小时 / 1 天）复用已生成的图片，避免重复渲染
     if (
@@ -1278,8 +1281,8 @@ def main():
         "-t",
         "--theme",
         choices=["dark", "light"],
-        default="light",
-        help="颜色风格：dark（暗色）/ light（亮色），默认 light",
+        default=None,
+        help="颜色风格：dark（暗色）/ light（亮色），默认跟随配置项 d2w_image_theme（light）",
     )
     args = parser.parse_args()
 

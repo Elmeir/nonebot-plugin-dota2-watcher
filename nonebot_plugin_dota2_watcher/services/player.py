@@ -14,6 +14,12 @@ class Player:
     nickname: str = ""
     last_DOTA2_match_ID: int = 0
     display_recent_match: bool = True
+    # 连胜 / 连败纪录：每场战报按本局胜负就地累加（二者必有一个为 0）
+    win_streak: int = 0
+    lose_streak: int = 0
+    # 已计入纪录的比赛 ID：同一玩家被多个群订阅时同一场会被处理多次，
+    # 用它保证一场只累加一次
+    streak_match_id: int = 0
     # 最近一场比赛的对局数据（由 generate_message 填充）
     stats: dict[str, Any] = field(default_factory=dict)
 
@@ -24,6 +30,9 @@ class Player:
             "nickname": self.nickname,
             "last_DOTA2_match_ID": self.last_DOTA2_match_ID,
             "display_recent_match": self.display_recent_match,
+            "win_streak": self.win_streak,
+            "lose_streak": self.lose_streak,
+            "streak_match_id": self.streak_match_id,
         }
 
     @classmethod
@@ -34,6 +43,9 @@ class Player:
             nickname=d.get("nickname", ""),
             last_DOTA2_match_ID=int(d.get("last_DOTA2_match_ID", 0) or 0),
             display_recent_match=bool(d.get("display_recent_match", True)),
+            win_streak=int(d.get("win_streak", 0) or 0),
+            lose_streak=int(d.get("lose_streak", 0) or 0),
+            streak_match_id=int(d.get("streak_match_id", 0) or 0),
         )
 
     def load_player_info(self, info: dict) -> None:

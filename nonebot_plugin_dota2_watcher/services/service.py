@@ -22,7 +22,6 @@ from ..datasources.request_match import (
     request_match_history,
     request_match_info_opendota,
     request_news,
-    request_recent_matches,
 )
 from ..generators import core_build, hero_pool, match_builder
 from ..generators import playmates as playmates_gen
@@ -490,47 +489,29 @@ async def _fetch_history(player: Player) -> int | None:
         return None
 
 
-def _is_win(match: dict) -> bool | None:
-    """由 OpenDota 最近比赛条目判断该玩家是否获胜；字段缺失时返回 None。"""
-    radiant_win = match.get("radiant_win")
-    slot = match.get("player_slot")
-    if radiant_win is None or slot is None:
-        return None
-    return bool(radiant_win) == (int(slot) < 128)
+def update_streak(player: Player, win: bool | None, match_id: int = 0) -> tuple[int, int]:
+    """按本局胜负就地累加玩家的连胜 / 连败纪录，返回 (连胜, 连败)。
 
+    连胜与连败二者必有一个为 0；胜负未知（详情缺字段）时不改动纪录。
+    纪录随战报逐场累加，不额外请求数据源（见 _report_match）。
 
-def count_streak(
-    matches: list[dict],
-    current_match_id=None,
-    current_win: bool | None = None,
-) -> tuple[int, int]:
-    """统计最近比赛的连胜 / 连败场次（含正在进行播报的这一场）。
-
-    matches 为按时间倒序的最近比赛列表（OpenDota players/matches）。
-    当前战报对应的比赛刚打完，OpenDota 列表可能尚未刷新：若它不在列表里，
-    则按本局结果（current_win）在最前面补一场再统计。
-    返回 (连胜场数, 连败场数)，二者必有一个为 0。
+    同一玩家可能被多个群订阅，同一场比赛会被处理多次（各群各自播报），
+    因此用 match_id 去重：同一场只累加一次，避免连胜/连败翻倍。
+    match_id 为 0（详情缺 ID）时不做去重，仍按胜负累加。
     """
-    results: list[bool] = []
-    for match in matches:
-        win = _is_win(match)
-        if win is not None:
-            results.append(win)
-
-    ids = {int(m.get("match_id") or 0) for m in matches}
-    if current_win is not None and (current_match_id is None or int(current_match_id) not in ids):
-        results.insert(0, bool(current_win))
-
-    if not results:
-        return 0, 0
-
-    first = results[0]
-    count = 0
-    for win in results:
-        if win != first:
-            break
-        count += 1
-    return (count, 0) if first else (0, count)
+    if win is None:
+        return player.win_streak, player.lose_streak
+    if match_id and player.streak_match_id == int(match_id):
+        return player.win_streak, player.lose_streak
+    if win:
+        player.win_streak += 1
+        player.lose_streak = 0
+    else:
+        player.lose_streak += 1
+        player.win_streak = 0
+    if match_id:
+        player.streak_match_id = int(match_id)
+    return player.win_streak, player.lose_streak
 
 
 def _player_win(match_info: dict, account_id: int) -> bool | None:
@@ -547,36 +528,26 @@ def _player_win(match_info: dict, account_id: int) -> bool | None:
     return None
 
 
-async def _fetch_streaks(player_list: list, match_info: dict) -> dict[int, tuple[int, int]]:
-    """并发拉取各玩家的最近比赛，统计含本局的连胜 / 连败。
+def _report_streaks(player_list: list, match_info: dict) -> dict[int, tuple[int, int]]:
+    """按本局胜负累加各玩家的连胜 / 连败纪录，返回 {steam_id: (连胜, 连败)}。
 
-    任一位玩家拉取失败时该项退化为 (0, 0)，不影响锐评其余维度。
+    复用战报已拉取的比赛详情，不额外请求数据源；纪录就地写回 Player，
+    由轮询末尾的 store.save() 一并持久化。
     """
-    results = await asyncio.gather(
-        *(request_recent_matches(p.short_steamID) for p in player_list),
-        return_exceptions=True,
-    )
     streaks: dict[int, tuple[int, int]] = {}
-    for player, matches in zip(player_list, results):
-        if isinstance(matches, Exception) or not matches:
-            streaks[player.short_steamID] = (0, 0)
-            continue
-        # 本局胜负由比赛详情给出，比依赖列表是否已刷新更可靠
-        streaks[player.short_steamID] = count_streak(
-            matches,
-            current_match_id=match_info.get("match_id"),
-            current_win=_player_win(match_info, player.short_steamID),
-        )
+    for player in player_list:
+        win = _player_win(match_info, player.short_steamID)
+        streaks[player.short_steamID] = update_streak(player, win, match_info.get("match_id") or 0)
     return streaks
 
 
 async def _report_match(match: NewMatch) -> None:
     """生成并发送一场比赛的战报（图片 + 一句话锐评）。"""
-    # 连胜/连败是锐评的一个维度，取不到时不影响其余维度
+    # 连胜/连败是锐评的一个维度：按本局结果就地累加纪录（不额外抓取数据）
     try:
-        streaks = await _fetch_streaks(match.players, match.match_info)
+        streaks = _report_streaks(match.players, match.match_info)
     except Exception:
-        logger.exception(f"连胜/连败统计失败: {match.match_id}")
+        logger.exception(f"连胜/连败纪录更新失败: {match.match_id}")
         streaks = {}
 
     try:

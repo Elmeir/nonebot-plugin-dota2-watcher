@@ -5,7 +5,17 @@
 # 按「维度」分组，判定逻辑见 generators/roast.py：
 #   每个维度命中后按权重参与随机，权重越高越容易被选中；
 #   组内再随机取一句。占位符用 {name}（玩家昵称），
-#   其余可用占位符见 roast._format_kwargs（hero / kda / gpm / lh / n 等）。
+#   其余可用占位符见 roast._format_kwargs（hero / kda / gpm / dmg / n 等）。
+#
+# 【重要】锐评必须与本局胜负挂钩：
+#   除 win_* / lose_* / streak_* 这几组外，其余维度一律按胜负拆成
+#   `<维度>_win` 与 `<维度>_lose` 两组，句子各自写明本局结果
+#   （例如 kda_god_win / kda_god_lose）。选句时由 roast 按 win 自动取后缀，
+#   不允许出现「结果中立」的句子——同一个数据赢了和输了是两种说法。
+#
+# 【重要】数据类维度都只在「本局全场最高 / 最低」时命中（见 roast._extreme_ok）：
+#   句子里的「全场最高」「经济碾压」这类结论必须是同场第一 / 最后一名才成立，
+#   因此新加维度时要确认它对应的是某项数据的极值，而不是中等水平。
 # 可以直接在这里继续加句子，加新的维度组即可扩展分支。
 # ============================================================
 ROAST_LINES = {
@@ -69,147 +79,248 @@ ROAST_LINES = {
         "{name} {n} 连败，要不今天先到这儿？",
         "{name}已经 {n} 连败，这号是不是被人下咒了",
     ],
+    # ============================================================
+    # 以下维度一律按本局胜负拆成 _win / _lose 两组：
+    # 同样一个数据，赢了和输了是完全不同的两种说法，
+    # 因此每一句都必须自带本局结果，不允许出现「结果中立」的句子。
+    # ============================================================
     # ---------- KDA ----------
-    "kda_god": [
-        "{name}这局 KDA {kda}，对面是不是在挂机",
-        "{name}打出 {kda} 的 KDA，建议尿检",
-        "{name} KDA {kda}，你确定不是在打人机",
-        "{name}这数据 {kda}，对面五个人是来旅游的吧",
-        "{name} KDA 高达 {kda}，这把属于是降维打击",
+    "kda_god_win": [
+        "{name}这局 KDA {kda}，对面是不是在挂机，赢得一点难度都没有",
+        "{name}打出 {kda} 的 KDA 还赢了，建议直接尿检",
+        "{name} KDA {kda}，你确定不是在打人机，赢麻了",
+        "{name}这数据 {kda}，对面五个人是来旅游的吧，这局赢得毫无悬念",
+        "{name} KDA 高达 {kda}，这把属于是降维打击，赢得毫无悬念",
     ],
-    "kda_high": [
-        "{name}本局 KDA {kda}，多少有点东西",
-        "{name} {kda} 的 KDA，这把确实站出来了",
-        "{name} KDA {kda}，数据这块没得黑",
+    "kda_god_lose": [
+        "{name}这局 KDA {kda} 都能输，队友是真不行",
+        "{name}打出 {kda} 的 KDA 还输了，这局输得跟你没关系",
+        "{name} KDA {kda} 都带不动，这局还是输了",
+        "{name}这数据 {kda} 都赢不了，输了属实是白打",
+        "{name} KDA 高达 {kda}，可惜这局输了，数据好看没用",
     ],
-    "kda_low": [
-        "{name} KDA 只有 {kda}，这局纯纯的观众",
-        "{name} {kills} 杀 {deaths} 死，KDA {kda}，主打一个参与",
-        "{name} KDA {kda}，你在场上主要起到一个装饰作用",
-        "{name} {kda} 的 KDA，赢了也跟你关系不大",
+    "kda_high_win": [
+        "{name}本局 KDA {kda}，多少有点东西，赢下这局合情合理",
+        "{name} {kda} 的 KDA，这把确实站出来了，队友跟着躺赢",
+        "{name} KDA {kda}，数据这块没得黑，赢得也踏实",
     ],
-    "kda_trash": [
-        "{name} KDA {kda}，我上我也行，真的",
-        "{name} {kills}/{deaths}/{assists}，这数据放出去是要被举报的",
-        "{name} KDA {kda}，主打一个毫无贡献",
-        "{name}打得像在梦游，KDA 只有 {kda}",
-        "{name} {kills} 杀 {deaths} 死，KDA {kda}，这局就当没来过",
+    "kda_high_lose": [
+        "{name}本局 KDA {kda}，数据不难看，可惜还是输了",
+        "{name} {kda} 的 KDA 都赢不了，这局输得不冤",
+        "{name} KDA {kda}，自己没拉胯，队友拉了，还是输了",
+    ],
+    "kda_low_win": [
+        "{name} KDA 只有 {kda}，这局纯纯的观众，赢了也没你什么事",
+        "{name} {kills} 杀 {deaths} 死，KDA {kda}，主打一个躺赢",
+        "{name} KDA {kda}，你在场上主要起到一个吉祥物的作用，反正赢了",
+        "{name} {kda} 的 KDA，这把赢跟你关系不大",
+    ],
+    "kda_low_lose": [
+        "{name} KDA 只有 {kda}，这局纯纯的观众，输了也不奇怪",
+        "{name} {kills} 杀 {deaths} 死，KDA {kda}，主打一个参与，输了正常",
+        "{name} KDA {kda}，你在场上主要起到一个装饰作用，输了也不意外",
+        "{name} {kda} 的 KDA，这把输得跟你关系很大",
+    ],
+    "kda_trash_win": [
+        "{name} KDA {kda}，我上我也行，真的，反正都能赢",
+        "{name} {kills}/{deaths}/{assists}，这数据都能赢，队友是真猛",
+        "{name} KDA {kda}，主打一个毫无贡献还赢了",
+        "{name}打得像在梦游，KDA 只有 {kda}，躺得明明白白，赢了",
+        "{name} {kills} 杀 {deaths} 死，KDA {kda}，这局就当没来过，反正赢了",
+    ],
+    "kda_trash_lose": [
+        "{name} KDA {kda}，我上我也行，真的，这局输了不冤",
+        "{name} {kills}/{deaths}/{assists}，这数据放出去是要被举报的，输了活该",
+        "{name} KDA {kda}，主打一个毫无贡献，输了正常",
+        "{name}打得像在梦游，KDA 只有 {kda}，输了不冤",
+        "{name} {kills} 杀 {deaths} 死，KDA {kda}，这局就当没来过，反正也输了",
     ],
     # ---------- 阵亡 ----------
-    "death_many": [
-        "{name}送了 {deaths} 个人头，对面都该给你发工资了",
-        "{name}死了 {deaths} 次，复活甲都救不过来",
-        "{name} {deaths} 次阵亡，这是把野区当坟场了",
-        "{name}一个人头换 {deaths} 条命，这买卖亏大了",
-        "{name} {deaths} 死，你这复活点是不是设在对面的泉水",
+    "death_many_win": [
+        "{name}送了 {deaths} 个人头还能赢，对面是真的菜",
+        "{name}死了 {deaths} 次，复活甲都救不过来，居然还赢了",
+        "{name} {deaths} 次阵亡，这是把野区当坟场了，好在赢了",
+        "{name}一个人头换 {deaths} 条命，这买卖亏大了，但赢了",
+        "{name} {deaths} 死，复活点设在对面的泉水吧，这都能赢",
     ],
-    "death_zero": [
-        "{name}一次没死，全程隐身得恰到好处",
-        "{name} 0 阵亡，是操作好还是根本没参团",
-        "{name}这局一次都没死，问就是惜命",
+    "death_many_lose": [
+        "{name}送了 {deaths} 个人头，对面都该给你发工资了，输了不冤",
+        "{name}死了 {deaths} 次，复活甲都救不过来，这局输得不冤",
+        "{name} {deaths} 次阵亡，这是把野区当坟场了，输了也正常",
+        "{name}一个人头换 {deaths} 条命，这买卖亏大了，输了怪谁",
+        "{name} {deaths} 死，你这复活点是不是设在对面的泉水，输了不奇怪",
     ],
-    "death_feed": [
-        "{name}承包了全队 {death_rate}% 的阵亡，属实是顶梁柱",
-        "{name}参葬率 {death_rate}%，队友的命也是命",
-        "{name}本局死亡占比 {death_rate}%，这把主要来送温暖",
-        "{name} {deaths} 次阵亡占了全队 {death_rate}%，属实是劳模",
+    "death_zero_win": [
+        "{name}一次没死，全程隐身得恰到好处，赢得很轻松",
+        "{name} 0 阵亡还赢了，是操作好还是根本没参团",
+        "{name}这局一次都没死，问就是惜命，反正赢了",
+    ],
+    "death_zero_lose": [
+        "{name}一次没死，全程隐身得恰到好处，可惜还是输了",
+        "{name} 0 阵亡都赢不了，这局还是输了",
+        "{name}这局一次都没死，问就是惜命，输了也不奇怪",
+    ],
+    "death_feed_win": [
+        "{name}承包了全队 {death_rate}% 的阵亡，属实是顶梁柱，居然赢了",
+        "{name}参葬率 {death_rate}%，队友的命也是命，好在赢了",
+        "{name}本局死亡占比 {death_rate}%，这把主要来送温暖，结果还赢了",
+        "{name} {deaths} 次阵亡占了全队 {death_rate}%，属实是劳模，赢了就行",
+    ],
+    "death_feed_lose": [
+        "{name}承包了全队 {death_rate}% 的阵亡，属实是顶梁柱，这局输得不冤",
+        "{name}参葬率 {death_rate}%，队友的命也是命，可惜还是输了",
+        "{name}本局死亡占比 {death_rate}%，这把主要来送温暖，输了也正常",
+        "{name} {deaths} 次阵亡占了全队 {death_rate}%，属实是劳模，输了怪你",
     ],
     # ---------- 经济 ----------
-    "gpm_low": [
-        "{name} GPM 只有 {gpm}，这经济是在打慈善局",
-        "{name}全场 GPM {gpm}，装备栏比脸还干净",
-        "{name} GPM {gpm}，钱都花哪儿去了",
-        "{name} GPM {gpm}，这把是不是一直在泉水挂机",
+    "gpm_low_win": [
+        "{name} GPM 只有 {gpm}，这经济都能赢，队友是真大腿",
+        "{name}全场 GPM {gpm}，装备栏比脸还干净，居然赢了",
+        "{name} GPM {gpm}，钱都花哪儿去了，反正赢了",
+        "{name} GPM {gpm}，这把一直在泉水挂机吧，躺赢",
     ],
-    "gpm_high": [
-        "{name} GPM {gpm}，这刷钱速度有点离谱",
-        "{name} GPM 冲到 {gpm}，野区是不是你家的",
-        "{name} GPM {gpm}，对面经济差得都哭了",
+    "gpm_low_lose": [
+        "{name} GPM 只有 {gpm}，这经济是在打慈善局，输了不冤",
+        "{name}全场 GPM {gpm}，装备栏比脸还干净，输了也正常",
+        "{name} GPM {gpm}，钱都花哪儿去了，这局输得不冤",
+        "{name} GPM {gpm}，这把是不是一直在泉水挂机，输了活该",
+    ],
+    "gpm_high_win": [
+        "{name} GPM {gpm}，这刷钱速度有点离谱，赢了不意外",
+        "{name} GPM 冲到 {gpm}，野区是不是你家的，对面经济差得都哭了，赢得轻松",
+        "{name} GPM {gpm}，经济碾压，这局赢得理所当然",
+    ],
+    "gpm_high_lose": [
+        "{name} GPM {gpm}，刷了这么多钱还是输了，钱都白刷了",
+        "{name} GPM 冲到 {gpm}，野区是你家的又怎样，还是输了",
+        "{name} GPM {gpm}，经济领先都能输，这局输得是真离谱",
     ],
     # ---------- 输出 ----------
-    "dmg_carry": [
-        "{name}打了全队 {dmg_rate}% 的伤害，这局就是你的独角戏",
-        "{name}一人贡献 {dmg_rate}% 的团队输出，队友负责喊 666",
-        "{name}伤害占比 {dmg_rate}%，名副其实的大腿",
-        "{name} {dmg} 点伤害占全队 {dmg_rate}%，队友都在给你打辅助",
+    "dmg_carry_win": [
+        "{name}打了全队 {dmg_rate}% 的伤害，这局就是你的独角戏，赢得漂亮",
+        "{name}一人贡献 {dmg_rate}% 的团队输出，队友负责喊 666，赢麻了",
+        "{name}伤害占比 {dmg_rate}%，名副其实的大腿，这局赢下来全靠你",
+        "{name} {dmg} 点伤害占全队 {dmg_rate}%，队友都在给你打辅助，赢得理所当然",
     ],
-    "dmg_low": [
-        "{name}伤害占比只有 {dmg_rate}%，主打一个气氛组",
-        "{name} {dur_min} 分钟只打了 {dmg} 伤害，这输出不如野怪",
-        "{name}团队伤害占比 {dmg_rate}%，你是在给对面刮痧吗",
-        "{name} {dmg} 点伤害，对面护甲都没被打破",
+    "dmg_carry_lose": [
+        "{name}打了全队 {dmg_rate}% 的伤害还是输，队友是真的不行",
+        "{name}一人贡献 {dmg_rate}% 的团队输出，可惜还是输了",
+        "{name}伤害占比 {dmg_rate}%，名副其实的大腿，可惜输了，腿断了",
+        "{name} {dmg} 点伤害占全队 {dmg_rate}%，输出拉满还是输",
     ],
-    "dmg_huge": [
-        "{name}打了 {dmg} 的伤害，这是把对面当木桩了",
-        "{name}总伤害 {dmg}，对面五个人加起来都没你多",
-        "{name} {dmg} 伤害，键盘都要被你按冒烟了",
+    "dmg_low_win": [
+        "{name}伤害占比只有 {dmg_rate}%，主打一个气氛组，反正赢了",
+        "{name} {dur_min} 分钟只打了 {dmg} 伤害，这输出不如野怪，躺赢",
+        "{name}团队伤害占比 {dmg_rate}%，是在给对面刮痧吗，赢了就行",
+        "{name} {dmg} 点伤害，对面护甲都没被打破，居然赢了",
+    ],
+    "dmg_low_lose": [
+        "{name}伤害占比只有 {dmg_rate}%，主打一个气氛组，输了不冤",
+        "{name} {dur_min} 分钟只打了 {dmg} 伤害，这输出不如野怪，输了也正常",
+        "{name}团队伤害占比 {dmg_rate}%，你是在给对面刮痧吗，输了怪你",
+        "{name} {dmg} 点伤害，对面护甲都没被打破，这局输得不冤",
+    ],
+    "dmg_huge_win": [
+        "{name}打了 {dmg} 的伤害，这是把对面当木桩了，赢得毫无悬念",
+        "{name}总伤害 {dmg}，对面五个人加起来都没你多，这局赢得轻松",
+        "{name} {dmg} 伤害，键盘都要被你按冒烟了，这把赢定了",
+    ],
+    "dmg_huge_lose": [
+        "{name}打了 {dmg} 的伤害还输了，这局是真没救了",
+        "{name}总伤害 {dmg}，对面五个人加起来都没你多，可惜还是输了",
+        "{name} {dmg} 伤害，键盘按冒烟了还是输，队友呢",
     ],
     # ---------- 参团 ----------
-    "teamfight_low": [
-        "{name}参战率只有 {part}%，全程在野区单机",
-        "{name}参战率 {part}%，打团的时候你在哪呢",
-        "{name}队友打团你刷钱，参战率 {part}% 很真实",
-        "{name}参战率 {part}%，这局是来打野的还是来打团的",
+    "teamfight_low_win": [
+        "{name}参战率只有 {part}%，全程在野区单机，居然还赢了",
+        "{name}参战率 {part}%，打团的时候你在哪呢，反正赢了",
+        "{name}队友打团你刷钱，参战率 {part}% 很真实，躺赢",
+        "{name}参战率 {part}%，这局是来打野的还是来打团的，赢了就行",
     ],
-    "teamfight_high": [
-        "{name}参战率 {part}%，哪有事哪就有你",
-        "{name} {part}% 的参战率，属实是团战常客",
-        "{name}参战率 {part}%，全队打团最积极的就是你",
+    "teamfight_low_lose": [
+        "{name}参战率只有 {part}%，全程在野区单机，输了不冤",
+        "{name}参战率 {part}%，打团的时候你在哪呢，输了也正常",
+        "{name}队友打团你刷钱，参战率 {part}% 很真实，这局输得不冤",
+        "{name}参战率 {part}%，这局是来打野的还是来打团的，输了怪你",
+    ],
+    "teamfight_high_win": [
+        "{name}参战率 {part}%，哪有事哪就有你，这局赢得有你的功劳",
+        "{name} {part}% 的参战率，属实是团战常客，赢得理所当然",
+        "{name}参战率 {part}%，全队打团最积极的就是你，赢了",
+    ],
+    "teamfight_high_lose": [
+        "{name}参战率 {part}%，哪有事哪就有你，可惜还是输了",
+        "{name} {part}% 的参战率，团战常客又怎样，还是输了",
+        "{name}参战率 {part}%，全队打团最积极的就是你，结果还是输",
     ],
     # ---------- 人头 ----------
-    "kill_many": [
-        "{name}拿了 {kills} 个人头，对面是不是欠你钱",
-        "{name} {kills} 杀，这把人头被你承包了",
-        "{name} {kills} 个人头入账，队友只能捡你剩下的",
+    "kill_many_win": [
+        "{name}拿了 {kills} 个人头，对面是不是欠你钱，赢麻了",
+        "{name} {kills} 杀，这把人头被你承包了，赢得轻松",
+        "{name} {kills} 个人头入账，队友只能捡你剩下的，这局赢了",
     ],
-    "assist_many": [
-        "{name}助攻 {assists} 个，全队的 KPI 都靠你撑着",
-        "{name} {assists} 次助攻，属于是团队的隐形大腿",
-        "{name}助攻刷到 {assists}，人头都让给队友了",
+    "kill_many_lose": [
+        "{name}拿了 {kills} 个人头还是输，人头有什么用",
+        "{name} {kills} 杀，这把人头被你承包了，可惜输了",
+        "{name} {kills} 个人头入账，队友只能捡你剩下的，结果还是输",
     ],
-    "kill_zero": [
-        "{name}全场 0 杀，赢了但好像跟你没什么关系",
-        "{name}一个头都没拿到，这把纯属挂机领工资",
-        "{name} 0 杀 {assists} 助攻，主打一个无私奉献",
+    "assist_many_win": [
+        "{name}助攻 {assists} 个，全队的 KPI 都靠你撑着，赢得漂亮",
+        "{name} {assists} 次助攻，属于是团队的隐形大腿，这局赢了",
+        "{name}助攻刷到 {assists}，人头都让给队友了，这局赢得踏实",
     ],
-    # ---------- 数据源评分（仅作参考之一，不再作为唯一判定） ----------
-    "score_high": [
-        "{name}综合评分 {score}，这把确实打得漂亮",
-        "{name}评分 {score}，系统都替你说话了",
-        "{name}综合分 {score}，数据是不会骗人的",
+    "assist_many_lose": [
+        "{name}助攻 {assists} 个，全队的 KPI 都靠你撑着，可惜输了",
+        "{name} {assists} 次助攻，属于是团队的隐形大腿，可惜腿不够粗，输了",
+        "{name}助攻刷到 {assists}，人头都让给队友了，结果还是输",
     ],
-    "score_low": [
-        "{name}综合评分只有 {score}，数据不会骗人",
-        "{name}评分 {score}，这局的表现有目共睹",
-        "{name}综合分 {score}，建议把评分功能关了免得闹心",
+    "kill_zero_win": [
+        "{name}全场 0 杀，好像跟你没什么关系，反正赢了",
+        "{name}一个头都没拿到，这把纯属挂机领工资，躺赢",
+        "{name} 0 杀 {assists} 助攻，主打一个无私奉献，赢得轻松",
     ],
-    "bench_high": [
-        "{name}各项数据都排在同段位前 {bench}%，这局没得黑",
-        "{name}benchmark 领先同段位 {bench}%，确实强",
-    ],
-    "bench_low": [
-        "{name}数据只排在同段位前 {bench}%，这把是来体验生活的",
-        "{name}benchmark 垫底（前 {bench}%），属实抽象",
+    "kill_zero_lose": [
+        "{name}全场 0 杀，好像跟你没什么关系，输了也正常",
+        "{name}一个头都没拿到，这把纯属挂机领工资，输了不冤",
+        "{name} 0 杀 {assists} 助攻，主打一个无私奉献，输了怪你",
     ],
     # ---------- 英雄梗 ----------
-    "hero_meme": [
-        "{name}掏出{hero}，这把输赢先不说，节目效果是有了",
-        "{name}玩{hero}玩成这样，英雄本人都想申请换人",
-        "{name}的{hero}，属于是把这个英雄玩明白了，反向的",
+    "hero_meme_win": [
+        "{name}掏出{hero}，这把输赢先不说，节目效果是有了，居然还赢了",
+        "{name}玩{hero}玩成这样都能赢，英雄本人都想申请换人",
+        "{name}的{hero}，属于是把这个英雄玩明白了，反向的，但赢了",
+        "{name}选{hero}的时候就已经赢了一半了",
+        "{name}这{hero}，建议下次直接随机，反正赢了",
+        "{name}的{hero}，看一次少一次，赢了就当赚了",
+    ],
+    "hero_meme_lose": [
+        "{name}掏出{hero}，这把输赢先不说，节目效果是有了，可惜输了",
+        "{name}玩{hero}玩成这样，英雄本人都想申请换人，输了不冤",
+        "{name}的{hero}，属于是把这个英雄玩明白了，反向的，输了正常",
         "{name}选{hero}的时候就已经输了一半了",
-        "{name}这{hero}，建议下次直接随机",
-        "{name}的{hero}，看一次少一次，建议珍惜",
+        "{name}这{hero}，建议下次直接随机，这局输得不冤",
+        "{name}的{hero}，看一次少一次，建议珍惜，反正也输了",
     ],
     # ---------- 比赛时长 ----------
-    "long_game": [
-        "{name}这场打了 {dur_min} 分钟，双方都是铁人",
-        "{name} {dur_min} 分钟的大战，膀胱局名不虚传",
-        "{name}硬生生把一局打成了 {dur_min} 分钟，都累了",
+    "long_game_win": [
+        "{name}这场打了 {dur_min} 分钟，双方都是铁人，好在赢了",
+        "{name} {dur_min} 分钟的大战，膀胱局名不虚传，赢了值了",
+        "{name}硬生生把一局打成了 {dur_min} 分钟，都累了，还好赢了",
     ],
-    "short_game": [
-        "{name} {dur_min} 分钟就结束了，这局是去送快递的",
-        "{name}速通局，{dur_min} 分钟打卡下班",
-        "{name} {dur_min} 分钟结束战斗，连热身都不够",
+    "long_game_lose": [
+        "{name}这场打了 {dur_min} 分钟，双方都是铁人，结果还是输了",
+        "{name} {dur_min} 分钟的大战，膀胱局名不虚传，输了更难受",
+        "{name}硬生生把一局打成了 {dur_min} 分钟，都累了，还输了",
+    ],
+    "short_game_win": [
+        "{name} {dur_min} 分钟就结束了，这局是去送快递的，把对面送走了，赢得轻松",
+        "{name}速通局，{dur_min} 分钟打卡下班，赢得很轻松",
+        "{name} {dur_min} 分钟结束战斗，连热身都不够，就赢了",
+    ],
+    "short_game_lose": [
+        "{name} {dur_min} 分钟就结束了，这局是去送快递的，输了不冤",
+        "{name}速通局，{dur_min} 分钟打卡下班，被对面速通，输得干脆",
+        "{name} {dur_min} 分钟结束战斗，连热身都不够就输了",
     ],
 }
 

@@ -56,6 +56,7 @@ delete_team_cmd = on_command(
 )
 roster_cmd = on_command("战队", rule=_group_rule, priority=10, block=True)
 pro_cmd = on_command("pro", aliases={"PRO"}, rule=_group_rule, priority=10, block=True)
+playmates_cmd = on_command("开黑", rule=_group_rule, priority=10, block=True)
 subscribe_cmd = on_command(
     "订阅",
     rule=_group_rule,
@@ -238,6 +239,28 @@ async def handle_pro(event: GroupMessageEvent):
 
 
 # ---------------------------------------------------------------
+# /开黑：查询最常一起开黑的队友
+# ---------------------------------------------------------------
+@playmates_cmd.handle()
+async def handle_playmates(event: GroupMessageEvent):
+    args = _args(event)
+    if not (1 <= len(args) <= 2):
+        await playmates_cmd.finish("请输入：/开黑 [steam_id 或 玩家昵称] [dark|light]")
+    theme = "light"
+    if len(args) == 2:
+        if args[1].strip().lower() not in ("dark", "light"):
+            await playmates_cmd.finish("风格参数无效，请输入 dark 或 light")
+        theme = args[1].strip().lower()
+    try:
+        path = await service.playmates_image(event.group_id, args[0], theme)
+    except ValueError as e:
+        await playmates_cmd.finish(str(e))
+    if path:
+        await playmates_cmd.finish(MessageSegment.image(file=path))
+    await playmates_cmd.finish("开黑记录生成失败")
+
+
+# ---------------------------------------------------------------
 # 战队名单订阅：添加 / 查看 / 删除
 # ---------------------------------------------------------------
 @add_team_cmd.handle()
@@ -323,6 +346,7 @@ _HELP_TEXT = (
     "/ti [小组赛|正赛]：TI 赛事战报图片（默认最新阶段）\n"
     "/英雄池 [steam_id 或 玩家昵称]：生成英雄池环形图\n"
     "/pro [steam_id 或 玩家昵称]：与职业选手的对战记录\n"
+    "/开黑 [steam_id 或 玩家昵称] [dark|light]：最常一起开黑的队友记录图\n"
     "/添加刀塔战队 [队名或 team_id 或 CN]：订阅战队（CN 一键订阅全部中国战队）\n"
     "/查看刀塔战队：列出本群订阅战队\n"
     "/删除刀塔战队 [队名或 team_id 或 CN]：取消订阅战队（管理员以上，CN 一键取消全部中国战队）\n"

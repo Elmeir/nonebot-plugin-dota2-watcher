@@ -16,6 +16,7 @@ from nonebot.log import logger
 from ..config import DATA_DIR, config, is_group_allowed
 from ..datasources import d2pt, pro_names, pro_peers, team_roster, ti_results
 from ..datasources.hero_pool import HeroPoolError
+from ..datasources.playmates import PlaymatesError
 from ..datasources.pro_peers import ProPeersError
 from ..datasources.request_match import (
     request_match_history,
@@ -23,6 +24,7 @@ from ..datasources.request_match import (
     request_news,
 )
 from ..generators import core_build, hero_pool, match_builder
+from ..generators import playmates as playmates_gen
 from ..utils import load_cache, run_single_flight
 from . import store
 from .player import Player
@@ -280,6 +282,40 @@ async def pro_report(group_id, arg: str) -> str:
     except Exception:
         logger.exception("职业选手对战记录查询失败")
         return ""
+
+
+async def playmates_image(group_id, arg: str, theme: str = "light") -> str:
+    """生成玩家开黑记录图片（最常一起开黑的队友，按共同场次降序取前 20）。
+
+    arg 可为 steam_id（纯数字）或本群已订阅玩家昵称；
+    参数解析失败 / 未配置 Token 时抛出 ValueError（提示文案），生成失败返回空串。
+    相同账号的并发查询通过 single-flight 共享同一次执行（不重复抓取）。
+    """
+    arg = arg.strip()
+    # 优先按昵称匹配，因为昵称可能是数字，会与 steam_id 混淆
+    player = next(
+        (p for p in store.get_group(str(group_id)) if p.nickname == arg),
+        None,
+    )
+    if player is not None:
+        steam_id = player.short_steamID
+    elif arg.isdigit():
+        steam_id = int(arg)
+    else:
+        raise ValueError(
+            f"未找到昵称为「{arg}」的订阅玩家，请先用 /添加刀塔玩家 订阅，或直接输入 steam_id"
+        )
+
+    async def _build() -> str:
+        try:
+            return await playmates_gen.generate_image(steam_id, theme=theme) or ""
+        except PlaymatesError as e:
+            raise ValueError(str(e))
+        except Exception:
+            logger.exception("开黑记录生成失败")
+            return ""
+
+    return await run_single_flight(("playmates", steam_id, theme), _build)
 
 
 # ---------------------------------------------------------------

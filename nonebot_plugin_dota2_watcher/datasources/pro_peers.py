@@ -31,7 +31,6 @@ import asyncio
 import json
 import re
 import time
-from datetime import datetime
 from pathlib import Path
 
 from nonebot.log import logger
@@ -45,7 +44,7 @@ from .hero_pool import HeroPoolError, _graphql_post, _RateLimited, _token
 QUERY = """
 query GetPeers($steamId: Long!, $teammatesPeersRequest: PlayerTeammatesGroupByRequestType!, $teammatesPeersAgainstRequest: PlayerTeammatesGroupByRequestType!, $take: Int) {
   player(steamAccountId: $steamId) {
-    steamAccount { name }
+    steamAccount { name avatar }
   }
   stratz {
     page {
@@ -54,13 +53,13 @@ query GetPeers($steamId: Long!, $teammatesPeersRequest: PlayerTeammatesGroupByRe
           matchCount
           winCount
           lastMatchDateTime
-          steamAccount { id name proSteamAccount { id name team { name tag } } }
+          steamAccount { id name avatar proSteamAccount { id name team { name tag } } }
         }
         peersAgainst: peers(request: $teammatesPeersAgainstRequest, take: $take) {
           matchCount
           winCount
           lastMatchDateTime
-          steamAccount { id name proSteamAccount { id name team { name tag } } }
+          steamAccount { id name avatar proSteamAccount { id name team { name tag } } }
         }
       }
     }
@@ -79,7 +78,7 @@ _PEERS_VARS_BASE = {
 
 # 抓取结果缓存：按 steam 账号各存一份到 data/pro_peers/ 目录，缓存不设时间限制
 CACHE_DIR = DATA_DIR / "pro_peers"
-CACHE_VERSION = 6  # 缓存结构版本（stats 含玩家昵称）；升级后旧缓存自动失效
+CACHE_VERSION = 7  # 缓存结构版本（stats 含玩家昵称与头像）；升级后旧缓存自动失效
 OUTPUT_LIMIT = 10  # 报告最多展示的职业选手条数
 
 # Liquipedia 选手页校验：批量 MediaWiki API + 按选手名缓存 1 个月
@@ -106,16 +105,22 @@ def _cache_path(steam_id) -> Path:
 
 
 def _load_cache(cache_path: Path, steam_id):
-    """读取缓存；命中（结构/账号一致）即返回 (player_name, stats)，否则 None。"""
+    """读取缓存；命中（结构/账号一致）即返回 (player_name, player_avatar, stats)，否则 None。"""
     data = load_cache(cache_path)
     if data is None or data.get("cache_version") != CACHE_VERSION:
         return None
     if data.get("steam_id") != int(steam_id):
         return None
-    return data.get("player_name") or "玩家", data.get("stats") or []
+    return (
+        data.get("player_name") or "玩家",
+        data.get("player_avatar") or "",
+        data.get("stats") or [],
+    )
 
 
-def _save_cache(cache_path: Path, steam_id, player_name: str, stats: list[dict]) -> None:
+def _save_cache(
+    cache_path: Path, steam_id, player_name: str, player_avatar: str, stats: list[dict]
+) -> None:
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache_path.write_text(
         json.dumps(
@@ -124,6 +129,7 @@ def _save_cache(cache_path: Path, steam_id, player_name: str, stats: list[dict])
                 "steam_id": int(steam_id),
                 "fetched_at": time.time(),
                 "player_name": player_name,
+                "player_avatar": player_avatar,
                 "stats": stats,
             },
             ensure_ascii=False,
@@ -193,6 +199,8 @@ def _merge_peer_groups(payload: dict, steam_id: int) -> list[dict]:
                 "pro_id": pro.get("id") or "",
                 # 玩家游戏内昵称（steamAccount.name），输出展示用
                 "nickname": account.get("name") or "",
+                # STRATZ 头像（steamAccount.avatar）；缺失时由 apply_pro_avatars 补
+                "avatar": account.get("avatar") or "",
                 "with": info["with"],
                 "with_win": info["with_win"],
                 "against": info["against"],
@@ -208,8 +216,8 @@ async def fetch_pro_peers(steam_id):
     """单次 GraphQL 聚合查询玩家与职业选手的队友/对手记录。
 
     每次调用先尝试抓取 API，抓取失败（网络/限流）才回退本地缓存（不设时间限制）。
-    返回 (player_name, stats)：stats 按（队友+对手）总场次降序，每条
-    {'name', 'nickname', 'with', 'with_win', 'against', 'against_win', 'last'}。
+    返回 (player_name, player_avatar, stats)：stats 按（队友+对手）总场次降序，每条
+    {'name', 'nickname', 'avatar', 'with', 'with_win', 'against', 'against_win', 'last'}。
     """
     steam_id = int(steam_id)
     cache_path = _cache_path(steam_id)
@@ -242,15 +250,15 @@ async def fetch_pro_peers(steam_id):
                 raise
         if payload.get("errors"):
             raise ProPeersError(f"Stratz GraphQL 返回错误：{payload['errors']}")
-        player_name = (
-            ((payload.get("data") or {}).get("player") or {}).get("steamAccount") or {}
-        ).get("name") or "玩家"
+        account = (((payload.get("data") or {}).get("player") or {}).get("steamAccount")) or {}
+        player_name = account.get("name") or "玩家"
+        player_avatar = account.get("avatar") or ""
         stats = _merge_peer_groups(payload, steam_id)
         try:
-            _save_cache(cache_path, steam_id, player_name, stats)
+            _save_cache(cache_path, steam_id, player_name, player_avatar, stats)
         except Exception as e:
             logger.warning(f"职业选手对战记录缓存写入失败：{e}")
-        return player_name, stats
+        return player_name, player_avatar, stats
 
     return await cache_with_fallback(
         cache_path,
@@ -291,6 +299,7 @@ async def fetch_opendota_pros(steam_id) -> list[dict]:
                     "name": entry.get("name") or "",
                     "nickname": entry.get("personaname") or "",
                     "pro_id": int(pro_id),
+                    "avatar": entry.get("avatarmedium") or entry.get("avatar") or "",
                     "with": entry.get("with_games") or 0,
                     "with_win": entry.get("with_win") or 0,
                     "against": entry.get("against_games") or 0,
@@ -338,6 +347,8 @@ def merge_stats(stratz_stats: list[dict], od_stats: list[dict]) -> list[dict]:
         cur["last"] = max(cur.get("last") or 0, od.get("last") or 0)
         if not cur.get("name"):
             cur["name"] = od.get("name") or ""
+        if not cur.get("avatar"):
+            cur["avatar"] = od.get("avatar") or ""
         # 昵称以 OpenDota 的 personaname 为准（选手当前实际游戏昵称，比 STRATZ 更新及时）
         if od.get("nickname"):
             cur["nickname"] = od["nickname"]
@@ -345,34 +356,11 @@ def merge_stats(stratz_stats: list[dict], od_stats: list[dict]) -> list[dict]:
 
 
 def _fmt_games(win: int, total: int) -> str:
-    """场次格式化：无同局记录（0/0）时只显示 0，否则显示 胜/总。"""
+    """场次格式化：无同局记录（0/0）时只显示 0，否则显示 胜/总。
+
+    供图片生成器渲染「队友 胜/总 · 对手 胜/总」复用。
+    """
     return str(total) if total == 0 else f"{win}/{total}"
-
-
-def build_report(player_name: str, stats: list[dict]) -> str:
-    """把聚合统计格式化为群消息文本（按总场次降序，最多 OUTPUT_LIMIT 条）。"""
-    if not stats:
-        return f"{player_name}未在历史比赛中遇到过职业选手"
-    head = f"{player_name}与职业选手的对战记录"
-    if len(stats) > OUTPUT_LIMIT:
-        head += f"(共{len(stats)}位, 仅展示前{OUTPUT_LIMIT}位)"
-    else:
-        head += f"(共{len(stats)}位)"
-    lines = [f"{head}："]
-    for st in stats[:OUTPUT_LIMIT]:
-        # 括号内显示玩家游戏内昵称；与选手名相同或为空时省略
-        nickname = st.get("nickname") or ""
-        tag = f" ({nickname})" if nickname and nickname != st["name"] else ""
-        last = (
-            datetime.fromtimestamp(st["last"]).strftime("%Y/%m/%d") if st["last"] else "未知"
-        )
-        lines.append(
-            f"{st['name']}{tag} 队友{_fmt_games(st['with_win'], st['with'])}"
-            f" 对手{_fmt_games(st['against_win'], st['against'])} {last}"
-        )
-        if st.get("last_match_id"):
-            lines[-1] += f" {st['last_match_id']}"
-    return "\n".join(lines)
 
 
 async def apply_pro_names(stats: list[dict]) -> None:
@@ -400,6 +388,37 @@ async def apply_pro_names(stats: list[dict]) -> None:
             continue
         if info and info.get("name"):
             st["name"] = info["name"]
+
+
+async def apply_pro_avatars(stats: list[dict]) -> None:
+    """用共享的职业选手表补齐缺失的选手头像（原地修改 avatar 字段）。
+
+    STRATZ 的 peers 未必带 avatar；OpenDota 职业选手表有稳定的 avatarmedium，
+    这里仅填补空值，不覆盖已有的头像。
+    """
+    ids: list[int] = []
+    for st in stats:
+        if st.get("avatar"):
+            continue
+        try:
+            ids.append(int(st["pro_id"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+    if not ids:
+        return
+    try:
+        infos = await pro_names.resolve(ids)
+    except Exception:
+        return
+    for st in stats:
+        if st.get("avatar"):
+            continue
+        try:
+            info = infos.get(int(st["pro_id"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if info and info.get("avatarmedium"):
+            st["avatar"] = info["avatarmedium"]
 
 
 # ============================================================
@@ -567,143 +586,3 @@ async def filter_verified(stats: list[dict]) -> list[dict]:
         if _page_matches_pro(entry, int(st.get("pro_id") or 0)):
             result.append(st)
     return result
-
-
-# 比赛 ID 缓存：按查询账号存 data/pro_peers/last_match_ids_{id}.json，
-# 记录 {str(pro_id): {"last": 上次同局时间, "match_id": 比赛 ID}}；
-# 上次同局时间没变即视为比赛 ID 仍有效，直接读缓存不再请求 STRATZ
-_IDS_CACHE_VERSION = 1
-
-
-def _ids_cache_path(steam_id) -> Path:
-    """返回指定 steam 账号的比赛 ID 缓存文件路径。"""
-    return CACHE_DIR / f"last_match_ids_{int(steam_id)}.json"
-
-
-def _load_ids_cache(cache_path: Path, steam_id) -> dict:
-    """读取比赛 ID 缓存；命中（结构/账号一致）返回 entries 表，否则空表。"""
-    data = load_cache(cache_path)
-    if data is None or data.get("cache_version") != _IDS_CACHE_VERSION:
-        return {}
-    if data.get("steam_id") != int(steam_id):
-        return {}
-    return data.get("entries") or {}
-
-
-def _save_ids_cache(cache_path: Path, steam_id, entries: dict) -> None:
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    cache_path.write_text(
-        json.dumps(
-            {"cache_version": _IDS_CACHE_VERSION, "steam_id": int(steam_id), "entries": entries},
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-
-
-async def attach_last_match_ids(steam_id, stats: list[dict]) -> None:
-    """为前 OUTPUT_LIMIT 位选手补充「上次共同对局」的比赛 ID（原地写入 last_match_id 键）。
-
-    做法：以 peers 给出的 lastMatchDateTime 为中心开 ±3 小时时间窗口，
-    每位选手一个别名字段查窗口内自己的比赛（含全部玩家 proSteamAccount），
-    按 proSteamAccount.id 匹配出该选手同场的比赛，窗口内取最新一场。
-    注意不能用 peers 的 steamAccount.id 去匹配（它会错绑同场普通玩家），
-    也不能用 withFriend/withEnemySteamAccountIds 过滤（行为不可靠）。
-    比赛 ID 按 (pro_id, last) 缓存：上次同局时间没变就直接复用缓存的 ID，
-    仅对时间变化或无缓存的选手发起查询。
-    抓取失败不抛异常（仅日志），报告退化为无比赛 ID。
-    """
-    targets = [st for st in stats if st.get("pro_id")][:OUTPUT_LIMIT]
-    if not targets:
-        return
-    cache_path = _ids_cache_path(steam_id)
-    cached = _load_ids_cache(cache_path, steam_id)
-
-    # 上次同局时间没变的选手直接复用缓存，只有时间变化/无缓存的才需要查询
-    pending = []
-    for st in targets:
-        last = st["last"] or 0
-        entry = cached.get(str(st["pro_id"])) or {}
-        if last and entry.get("last") == last and entry.get("match_id"):
-            st["last_match_id"] = entry["match_id"]
-        else:
-            pending.append(st)
-    if not pending:
-        return
-    try:
-        token = _token()
-    except HeroPoolError as e:
-        logger.warning(f"未配置 Stratz Token，无法补充比赛 ID：{e}")
-        return
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-        "User-Agent": "stratz-pro-peers/0.1",
-    }
-    # 每位选手一个窗口变量（变量式传参与 stratz.com 网站一致）
-    window = 3 * 3600
-    var_defs, aliases, variables = [], [], {"id": int(steam_id)}
-    for i, st in enumerate(pending):
-        last = st["last"] or 0
-        if not last:
-            continue
-        var_defs.append(f"$w{i}: PlayerMatchesRequestType!")
-        aliases.append(
-            f"m{i}: matches(request: $w{i}) {{ id startDateTime "
-            "players { steamAccount { proSteamAccount { id } } } }"
-        )
-        variables[f"w{i}"] = {
-            "startDateTime": last - window,
-            "endDateTime": last + window,
-            "take": 20,
-        }
-    if not aliases:
-        return
-    query = (
-        "query LastMatchIds($id: Long!, " + ", ".join(var_defs) + ") "
-        "{ player(steamAccountId: $id) { " + " ".join(aliases) + " } }"
-    )
-
-    # 对限流(429/503)做退避重试；最终失败则放弃补充 ID
-    for attempt in range(4):
-        try:
-            payload = await _graphql_post(query, variables, headers)
-            break
-        except _RateLimited:
-            if attempt < 3:
-                await asyncio.sleep(15 * (attempt + 1))
-                continue
-            logger.warning("Stratz 补充比赛 ID 被限流，本次报告不含比赛 ID")
-            return
-        except Exception as e:
-            logger.warning(f"Stratz 补充比赛 ID 失败，本次报告不含比赛 ID：{e}")
-            return
-    if payload.get("errors"):
-        logger.warning(f"Stratz 补充比赛 ID 返回错误：{payload['errors']}")
-        return
-
-    player_data = (payload.get("data") or {}).get("player") or {}
-    updated = False
-    for i, st in enumerate(pending):
-        if f"w{i}" not in variables:
-            continue
-        pro_id = st["pro_id"]
-        hits = []
-        for m in player_data.get(f"m{i}") or []:
-            for p in m.get("players") or []:
-                pro = ((p.get("steamAccount") or {}).get("proSteamAccount")) or {}
-                if pro.get("id") == pro_id:
-                    hits.append(m)
-                    break
-        if hits:
-            # 窗口内可能同场多场，取最新一场
-            match = max(hits, key=lambda m: m.get("startDateTime") or 0)
-            st["last_match_id"] = match["id"]
-            cached[str(pro_id)] = {"last": st["last"] or 0, "match_id": match["id"]}
-            updated = True
-    if updated:
-        try:
-            _save_ids_cache(cache_path, steam_id, cached)
-        except Exception as e:
-            logger.warning(f"比赛 ID 缓存写入失败：{e}")

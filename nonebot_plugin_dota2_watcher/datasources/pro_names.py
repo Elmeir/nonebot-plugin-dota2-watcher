@@ -28,7 +28,7 @@ from ..config import DATA_DIR, OPENDOTA_PRO_PLAYERS_URL
 from ..utils import get_json, load_cache
 
 CACHE_FILE = DATA_DIR / "pro_names.json"
-CACHE_VERSION = 2  # 保留字段变化时递增，使旧缓存自动失效重新拉取
+CACHE_VERSION = 3  # 保留字段变化时递增，使旧缓存自动失效重新拉取
 CACHE_TTL = 24 * 3600  # 职业名稳定，但转会会改队伍，故按天刷新
 
 # 进程内索引：{account_id: {"name","personaname","team_name","team_tag",...}}
@@ -40,6 +40,7 @@ _KEEP_FIELDS = (
     "personaname",
     "team_name",
     "team_tag",
+    "avatar",
     "avatarmedium",
     "fantasy_role",
 )

@@ -129,7 +129,7 @@ LOCALSTORE_CACHE_DIR=./cache   # 可选：图片/战报等可再生缓存目录
 | `/查看刀塔战队`                   | 查看本群已订阅战队列表                              | 任意  |
 | `/删除刀塔战队 [队名或 team_id 或 CN]`   | 删除本群指定战队订阅；`CN` 一键取消全部中国战队                               | 管理员 |
 | `/战队 [队名或 team_id 或 CN]`   | 查询战队当前登记名单（显示职业名；`CN` 返回全部中国战队，每队一行）    | 任意  |
-| `/pro [steam_id 或 玩家昵称]`        | 查询与职业选手的队友/对手对战记录（Stratz + OpenDota 互补，Liquipedia 校验，展示前 10 条） | 任意  |
+| `/pro [steam_id 或 玩家昵称] [dark\|light]` | 生成与职业选手的队友/对手对战记录图（Stratz + OpenDota 互补，Liquipedia 校验，展示前 10 条） | 任意  |
 | `/开黑 [steam_id 或 玩家昵称] [dark\|light]` | 生成最常一起开黑的队友记录图（Stratz 同队聚合，按共同场次降序取前 20，含场次与胜率） | 任意  |
 | `/订阅`                            | 查看订阅状态（全局总开关与本群开关）        | 管理员 |
 | `/订阅 新闻 [开\|关]`                 | 切换或指定开、关官方新闻订阅并展示状态       | 管理员 |
@@ -175,6 +175,7 @@ nonebot_plugin_dota2_watcher/     # 插件包
 │   ├── match_report.py      # 战报图片绘制
 │   ├── hero_pool.py         # 英雄池环形图生成
 │   ├── playmates.py         # 开黑记录图生成
+│   ├── pro_peers.py         # 职业选手对战记录图生成
 │   └── shared_browser.py    # 共享 Playwright 浏览器
 ```
 

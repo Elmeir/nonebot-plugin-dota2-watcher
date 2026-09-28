@@ -14,7 +14,7 @@ from nonebot.adapters.onebot.v11 import Message, MessageSegment
 from nonebot.log import logger
 
 from ..config import DATA_DIR, config, is_group_allowed, normalize_image_theme
-from ..datasources import d2pt, pro_names, pro_peers, team_roster, ti_results
+from ..datasources import d2pt, pro_names, team_roster, ti_results
 from ..datasources.hero_pool import HeroPoolError
 from ..datasources.playmates import PlaymatesError
 from ..datasources.pro_peers import ProPeersError
@@ -26,6 +26,7 @@ from ..datasources.request_match import (
 )
 from ..generators import core_build, hero_pool, match_builder
 from ..generators import playmates as playmates_gen
+from ..generators import pro_peers as pro_peers_gen
 from ..utils import load_cache, player_team, run_single_flight
 from . import store
 from .player import Player
@@ -250,14 +251,16 @@ async def hero_pool_image(group_id, arg: str, size: str = "", theme: str | None 
     return await run_single_flight(("hero_pool", steam_id, count, theme), _build)
 
 
-async def pro_report(group_id, arg: str) -> str:
-    """查询玩家与职业选手的对战记录，返回文本。
+async def pro_image(group_id, arg: str, theme: str | None = None) -> str:
+    """生成玩家与职业选手的对战记录图片（按队友+对手总场次降序取前 10）。
 
     arg 可为 steam_id（纯数字）或本群已订阅玩家昵称；
-    参数解析失败 / 未配置 Token 时抛出 ValueError（提示文案），查询失败返回空串。
-    相同账号的并发查询通过 single-flight 共享同一次执行（不重复抓取）。
+    theme 留空时使用配置项 d2w_image_theme（默认 light）。
+    参数解析失败 / 未配置 Token 时抛出 ValueError（提示文案），生成失败返回空串。
+    相同账号 + 相同风格的并发查询通过 single-flight 共享同一次执行（不重复抓取）。
     """
     arg = arg.strip()
+    theme = normalize_image_theme(theme)
     # 优先按昵称匹配，因为昵称可能是数字，会与 steam_id 混淆
     player = next(
         (p for p in store.get_group(str(group_id)) if p.nickname == arg),
@@ -273,22 +276,15 @@ async def pro_report(group_id, arg: str) -> str:
         )
 
     async def _build() -> str:
-        player_name, stratz_stats = await pro_peers.fetch_pro_peers(steam_id)
-        od_stats = await pro_peers.fetch_opendota_pros(steam_id)
-        stats = pro_peers.merge_stats(stratz_stats, od_stats)
-        stats = await pro_peers.filter_verified(stats)
-        await pro_peers.attach_last_match_ids(steam_id, stats)
-        # 用共享的职业选手表统一显示名（缺失时保留 Stratz 原名）
-        await pro_peers.apply_pro_names(stats)
-        return pro_peers.build_report(player_name, stats)
+        try:
+            return await pro_peers_gen.generate_image(steam_id, theme=theme) or ""
+        except ProPeersError as e:
+            raise ValueError(str(e))
+        except Exception:
+            logger.exception("职业选手对战记录生成失败")
+            return ""
 
-    try:
-        return await run_single_flight(int(steam_id), _build)
-    except ProPeersError as e:
-        raise ValueError(str(e))
-    except Exception:
-        logger.exception("职业选手对战记录查询失败")
-        return ""
+    return await run_single_flight(("pro_peers", steam_id, theme), _build)
 
 
 async def playmates_image(group_id, arg: str, theme: str | None = None) -> str:

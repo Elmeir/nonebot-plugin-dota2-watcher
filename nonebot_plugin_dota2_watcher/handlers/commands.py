@@ -223,20 +223,25 @@ async def handle_hero_pool(event: GroupMessageEvent):
 
 
 # ---------------------------------------------------------------
-# /pro：查询与职业选手的对战记录
+# /pro：生成与职业选手的对战记录图
 # ---------------------------------------------------------------
 @pro_cmd.handle()
 async def handle_pro(event: GroupMessageEvent):
     args = _args(event)
-    if len(args) != 1:
-        await pro_cmd.finish("请输入：/pro [steam_id 或 玩家昵称]")
+    if not (1 <= len(args) <= 2):
+        await pro_cmd.finish("请输入：/pro [steam_id 或 玩家昵称] [dark|light]")
+    theme = None
+    if len(args) == 2:
+        if args[1].strip().lower() not in ("dark", "light"):
+            await pro_cmd.finish("风格参数无效，请输入 dark 或 light")
+        theme = args[1].strip().lower()
     try:
-        text = await service.pro_report(event.group_id, args[0])
+        path = await service.pro_image(event.group_id, args[0], theme)
     except ValueError as e:
         await pro_cmd.finish(str(e))
-    if text:
-        await pro_cmd.finish(text)
-    await pro_cmd.finish("职业选手对战记录查询失败")
+    if path:
+        await pro_cmd.finish(MessageSegment.image(file=path))
+    await pro_cmd.finish("职业选手对战记录生成失败")
 
 
 # ---------------------------------------------------------------

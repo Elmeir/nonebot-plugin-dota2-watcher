@@ -7,6 +7,8 @@
 胜率用胜/负配色（绿 / 红）突出。每行形如：
 
     {头像} {名字} {场次} {胜率}
+
+头像为方形（2rem，轻微圆角），标题旁头像与行内头像保持一致。
 """
 
 from __future__ import annotations
@@ -24,8 +26,12 @@ from ..datasources.hero_pool import load_avatar_img
 from . import shared_browser
 from .core_build import FONT_FAMILY, THEME_DARK, THEME_LIGHT, THEMES
 
-# 头像渲染尺寸（像素）：2.25rem ≈ 43px，超采样 2x 后取 96px 源图足够清晰
+# 头像渲染尺寸（像素）：2rem ≈ 38px，超采样 2x 后取 96px 源图足够清晰
 AVATAR_PX = 96
+
+# 头像展示尺寸与圆角：方形（非正圆），保留轻微圆角避免边角生硬
+AVATAR_SIZE = "2rem"
+AVATAR_RADIUS = "0.1875rem"
 
 # 胜率配色（绿=不亏，红=偏负）；与出装图的胜率绿色保持一致
 WIN_COLOR = "#7cc45c"
@@ -75,8 +81,9 @@ def _row_html(row: dict, avatar_uri: str, theme: dict) -> str:
         f"background-color: {theme['card_bg']}; "
         f"border: 0.09375rem solid {theme['card_border']}; "
         'border-radius: 0.5625rem; padding: 0.46875rem 0.65625rem;">'
-        # 头像（圆形裁切）
-        f'<div style="flex: 0 0 auto; width: 2.25rem; height: 2.25rem; border-radius: 50%; '
+        # 头像（方形 + 轻微圆角）
+        f'<div style="flex: 0 0 auto; width: {AVATAR_SIZE}; height: {AVATAR_SIZE}; '
+        f"border-radius: {AVATAR_RADIUS}; "
         f'{avatar_css} background-position: center;"></div>'
         # 名字（过长省略）
         f'<div style="flex: 1 1 auto; min-width: 0; overflow: hidden; '
@@ -109,7 +116,8 @@ def build_html(
     title_avatar = ""
     if player_avatar_uri:
         title_avatar = (
-            '<div style="flex: 0 0 auto; width: 2.25rem; height: 2.25rem; border-radius: 50%; '
+            f'<div style="flex: 0 0 auto; width: {AVATAR_SIZE}; height: {AVATAR_SIZE}; '
+            f"border-radius: {AVATAR_RADIUS}; "
             f"background-image: url('{player_avatar_uri}'); background-size: cover; "
             'background-position: center;"></div>'
         )

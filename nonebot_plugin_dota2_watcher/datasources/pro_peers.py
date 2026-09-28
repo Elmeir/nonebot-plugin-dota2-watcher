@@ -83,7 +83,9 @@ OUTPUT_LIMIT = 10  # 报告最多展示的职业选手条数
 
 # Liquipedia 选手页校验：批量 MediaWiki API + 按选手名缓存 1 个月
 LIQUIPEDIA_API = "https://liquipedia.net/dota2/api.php"
-_LIQUIPEDIA_UA = "nonebot-plugin-dota2-watcher/0.1 (https://github.com/Elmeir/dota2-watcher-nonebot)"
+_LIQUIPEDIA_UA = (
+    "nonebot-plugin-dota2-watcher/0.1 (https://github.com/Elmeir/nonebot-plugin-dota2-watcher)"
+)
 _LIQUI_BATCH_SIZE = 50  # MediaWiki API 单次最多 50 个标题
 _LIQUI_BATCH_INTERVAL = 1.0  # 批间间隔（秒），遵守 Liquipedia 限速（约 2 req/s）
 _LIQUI_CACHE_FILE = CACHE_DIR / "liquipedia_players.json"

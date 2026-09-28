@@ -48,7 +48,7 @@ __plugin_meta__ = PluginMetadata(
         "/help：查看本插件指令列表"
     ),
     type="application",
-    homepage="https://github.com/Elmeir/dota2-watcher-nonebot",
+    homepage="https://github.com/Elmeir/nonebot-plugin-dota2-watcher",
     config=Config,
     supported_adapters={"~onebot.v11"},
 )

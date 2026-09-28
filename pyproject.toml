@@ -33,7 +33,7 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/Elmeir/dota2-watcher-nonebot"
+Homepage = "https://github.com/Elmeir/nonebot-plugin-dota2-watcher"
 
 [build-system]
 requires = ["setuptools>=61.0"]

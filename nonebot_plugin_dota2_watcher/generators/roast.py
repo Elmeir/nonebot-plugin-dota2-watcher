@@ -8,6 +8,9 @@
   该维度的句库中随机取一句，从而让语句分支足够多、不总是同一类腔调。
 - **逐人评价**：同局多位订阅玩家各自独立判定（队伍数据按各自所在阵营计算），
   不做平均，返回每人一行。
+- **加速模式折算**：加速模式（game_mode=23）同样的真实时长里，等级 / 金钱的推进量
+  约为普通模式的两倍，因此「膀胱局 / 速通局」按等效普通模式时长判定；而补刀数按
+  真实分钟与普通模式基本持平（实测约 1.07 倍），故补刀效率仍用真实时长。
 """
 
 import random
@@ -26,6 +29,84 @@ EXCLUDED_BENCHMARKS = {
 
 # 达到多少连胜/连败才会作为锐评分支参与随机
 STREAK_MIN = 3
+
+# 加速模式（dota_dicts.GAME_MODE[23] = "加速模式"）
+TURBO_MODE = 23
+# 小黑盒兜底数据源不返回 game_mode，只给原始中文模式文本（如"加速模式"）
+TURBO_MODE_DESC_KEYWORD = "加速"
+# 加速模式的进度倍率：同样的真实时长里，等级 / 金钱的推进量约为普通模式的两倍
+# （实测 median 比值：等级/分钟 2.01、GPM 2.60、每次正补金钱 1.74；
+#   而正补/分钟 1.07 基本持平，故补刀效率仍按真实时长判定）
+TURBO_PROGRESS_MULTIPLIER = 2
+
+
+def is_turbo(match_info: dict) -> bool:
+    """是否加速模式。
+
+    优先看 OpenDota 的 game_mode；小黑盒兜底数据源没有该字段，退而匹配
+    mode_desc 里的中文模式名（见 datasources/xiaoheihe.py）。
+    """
+    if match_info.get("game_mode") == TURBO_MODE:
+        return True
+    if match_info.get("game_mode") is not None:
+        return False
+    return TURBO_MODE_DESC_KEYWORD in str(match_info.get("mode_desc") or "")
+
+
+def _kda_of(info: dict) -> float:
+    """从 OpenDota 原始玩家数据算 KDA。"""
+    kills = info.get("kills", 0) or 0
+    deaths = info.get("deaths", 0) or 0
+    assists = info.get("assists", 0) or 0
+    return (kills + assists) / max(deaths, 1)
+
+
+# 没有数据源评分时，用于「本局全局 10 人横向比较」的指标：
+# (展示名, 取值函数, 是否越大越好)
+_PEER_METRICS = (
+    ("KDA", _kda_of, True),
+    ("GPM", lambda p: float(p.get("gold_per_min") or 0), True),
+    ("XPM", lambda p: float(p.get("xp_per_min") or 0), True),
+    ("补刀", lambda p: float(p.get("last_hits") or 0), True),
+    ("输出", lambda p: float(p.get("hero_damage") or 0), True),
+    ("阵亡", lambda p: float(p.get("deaths") or 0), False),
+)
+
+
+def peer_percentiles(match_info: dict) -> dict[int, dict[str, float]]:
+    """按本局全局 10 人的数据，给出每位玩家各指标的百分位（0~100，越高越亮眼）。
+
+    没有数据源评分（小黑盒综合分 / OpenDota benchmark）时，用它替代原先的
+    「按 KDA 拍脑袋 + 抛硬币」，让正负倾向判定落在真实的全局横向比较上。
+    「越小越好」的指标（阵亡）会自动反向。返回值以 account_id 为键，
+    只含真实 account_id 的玩家（匿名玩家的 id 为 None，无法与订阅玩家对应）。
+    """
+    players = [p for p in (match_info.get("players") or []) if isinstance(p, dict)]
+    if len(players) < 2:
+        return {}
+
+    table: dict[int, dict[str, float]] = {}
+    for name, getter, higher_better in _PEER_METRICS:
+        # 比较群体是本局全部 10 人（匿名玩家也参与排名，只是不产出自己的行）
+        values = [(p.get("account_id"), getter(p)) for p in players]
+        n = len(values)
+        for account_id, value in values:
+            if account_id is None:
+                continue
+            if higher_better:
+                better = sum(1 for _, v in values if v < value)
+            else:
+                better = sum(1 for _, v in values if v > value)
+            table.setdefault(account_id, {})[name] = 100.0 * better / (n - 1)
+    return table
+
+
+def _peer_average(peer: dict[str, float] | None) -> float | None:
+    """各指标百分位的均值；无数据时返回 None。"""
+    if not peer:
+        return None
+    return sum(peer.values()) / len(peer)
+
 
 # 各维度权重：越具体、越有节目效果的维度权重越高；
 # 兜底维度（win_plain / lose_plain 等）权重最低，保证句子不至于太单调。
@@ -65,6 +146,11 @@ _WEIGHTS = {
     "score_low": 6,
     "bench_high": 4,
     "bench_low": 5,
+    # 本局全局 10 人横向比较（无数据源评分时启用）
+    "peer_top": 6,
+    "peer_bottom": 7,
+    "peer_kda_top": 6,
+    "peer_kda_bottom": 6,
     # 英雄梗 / 时长
     "hero_meme": 5,
     "long_game": 3,
@@ -108,11 +194,17 @@ def _bench_avg(benchmarks: dict | None) -> float | None:
     return sum(pcts) / len(pcts)
 
 
-def is_positive(stats: dict, win: bool, rng=random) -> bool:
+def is_positive(
+    stats: dict,
+    win: bool,
+    peer: dict[str, float] | None = None,
+    rng=random,
+) -> bool:
     """单名玩家本局表现偏正面还是负面（不再对多人取平均）。
 
-    依次尝试小黑盒综合评分 → OpenDota benchmark → KDA 经验判断，
-    与前几版口径一致，只是判定粒度从「全队平均」改为「逐人」。
+    依次尝试小黑盒综合评分 → OpenDota benchmark → 本局全局 10 人横向比较
+    （peer 为各指标百分位，见 peer_percentiles）→ KDA 经验判断。
+    前两者是「同段位基准」，第三者是「本局相对水平」，都没有时才退回经验判断。
     """
     score = stats.get("xiaoheihe_score")
     if score is not None:
@@ -121,6 +213,10 @@ def is_positive(stats: dict, win: bool, rng=random) -> bool:
     bench = _bench_avg(stats.get("benchmarks"))
     if bench is not None:
         return bench / 100 > config.d2w_benchmark_threshold
+
+    avg = _peer_average(peer)
+    if avg is not None:
+        return avg > 100 * config.d2w_benchmark_threshold
 
     kda = float(stats.get("kda") or 0)
     if (win and kda > 8) or (not win and kda > 6):
@@ -131,7 +227,12 @@ def is_positive(stats: dict, win: bool, rng=random) -> bool:
 
 
 def team_context(match_info: dict, team_number, stats: dict) -> dict:
-    """按玩家所在阵营汇总队伍数据，供伤害/参团/阵亡占比等维度使用。"""
+    """按玩家所在阵营汇总队伍数据，供伤害/参团/阵亡占比等维度使用。
+
+    「等效时长」：加速模式（game_mode=23）同样的真实时长里推进量约为普通模式的
+    两倍，因此膀胱局 / 速通局按折算后的等效普通模式时长判定，否则加速模式十几分钟
+    的局会被误判成「速通局」。
+    """
     players = match_info.get("players") or []
     teammates = [p for p in players if player_team(p) == team_number]
     team_damage = sum(p.get("hero_damage", 0) or 0 for p in teammates)
@@ -141,13 +242,23 @@ def team_context(match_info: dict, team_number, stats: dict) -> dict:
     win = radiant_win if team_number == 0 else not radiant_win
     duration = int(match_info.get("duration") or 0)
 
+    turbo = is_turbo(match_info)
+    # 真实时长：补刀 / 分均等「按真实分钟」的指标用它
+    dur_min = max(duration // 60, 1)
+    # 等效普通模式时长：等级 / 金钱等「进度」类指标用它
+    eq_duration = duration * TURBO_PROGRESS_MULTIPLIER if turbo else duration
+    eq_dur_min = max(eq_duration // 60, 1)
+
     def _rate(value: int, total: int) -> float:
         return 0.0 if not total else 100.0 * value / total
 
     return {
         "win": win,
+        "turbo": turbo,
         "duration": duration,
-        "dur_min": max(duration // 60, 1),
+        "dur_min": dur_min,
+        "eq_duration": eq_duration,
+        "eq_dur_min": eq_dur_min,
         "team_damage": team_damage,
         "team_kills": team_kills,
         "team_deaths": team_deaths,
@@ -169,6 +280,10 @@ def evaluate_candidates(
     hits: list[tuple[str, int]] = []
     win = ctx["win"]
     dur_min = ctx["dur_min"]
+    eq_dur_min = ctx["eq_dur_min"]
+    # 加速模式：等级 / 金钱的推进量约为普通模式两倍，按普通模式口径校准的阈值
+    # 需要同比放大，否则几乎人人命中 gpm_high / xpm_high，把其它维度挤掉
+    pace = TURBO_PROGRESS_MULTIPLIER if ctx.get("turbo") else 1
 
     kda = float(stats.get("kda") or 0)
     kills = int(stats.get("kill") or 0)
@@ -208,7 +323,8 @@ def evaluate_candidates(
     if deaths >= 5 and ctx["death_rate"] >= 30:
         hit("death_feed")
 
-    # 补刀（按每分钟折算，避免快慢局不可比；时长缺失时不折算）
+    # 补刀（按真实每分钟折算，避免快慢局不可比；时长缺失时不折算）
+    # 加速模式实测正补/分钟与普通模式基本持平（约 1.07 倍），故不折算倍率
     if ctx["duration"] > 0:
         lh_per_min = lh / dur_min
         if dur_min >= 15 and lh_per_min < 2.5:
@@ -218,12 +334,12 @@ def evaluate_candidates(
         elif lh_per_min >= 6:
             hit("lh_good")
 
-    # 经济
-    if gpm and gpm <= 300:
+    # 经济（阈值按模式节奏折算）
+    if gpm and gpm <= 300 * pace:
         hit("gpm_low")
-    elif gpm >= 700:
+    elif gpm >= 700 * pace:
         hit("gpm_high")
-    if xpm >= 800:
+    if xpm >= 800 * pace:
         hit("xpm_high")
 
     # 输出
@@ -262,6 +378,20 @@ def evaluate_candidates(
         elif bench <= 20:
             hit("bench_low")
 
+    # 没有数据源评分时，用本局全局 10 人的横向比较顶上（见 peer_percentiles）
+    peer = ctx.get("peer") or {}
+    if score is None and bench is None and peer:
+        avg = _peer_average(peer)
+        if avg is not None:
+            if avg >= 75:
+                hit("peer_top")
+            elif avg <= 25:
+                hit("peer_bottom")
+        if peer.get("KDA", 50) >= 90:
+            hit("peer_kda_top")
+        elif peer.get("KDA", 50) <= 10:
+            hit("peer_kda_bottom")
+
     # 英雄梗
     try:
         if int(stats.get("hero")) in MEME_HEROES:
@@ -270,10 +400,11 @@ def evaluate_candidates(
         pass
 
     # 比赛时长（duration 缺失的简化数据源不参与，避免「1 分钟速通」这类误判）
+    # 用「等效普通模式时长」：加速模式同样的真实时长推进量翻倍
     if ctx["duration"] > 0:
-        if dur_min >= 60:
+        if eq_dur_min >= 60:
             hit("long_game")
-        elif dur_min <= 20:
+        elif eq_dur_min <= 20:
             hit("short_game")
 
     return hits
@@ -284,6 +415,8 @@ def _format_kwargs(stats: dict, ctx: dict, name: str, streak: tuple[int, int]) -
     win_streak, lose_streak = streak
     bench = _bench_avg(stats.get("benchmarks"))
     score = stats.get("xiaoheihe_score")
+    peer = ctx.get("peer") or {}
+    peer_avg = _peer_average(peer)
     return _SafeDict(
         name=name,
         hero=_hero_name(stats.get("hero")),
@@ -299,9 +432,12 @@ def _format_kwargs(stats: dict, ctx: dict, name: str, streak: tuple[int, int]) -
         death_rate=f"{ctx['death_rate']:.0f}",
         part=f"{ctx['participation']:.0f}",
         dur_min=ctx["dur_min"],
+        eq_dur_min=ctx["eq_dur_min"],
         n=max(win_streak, lose_streak),
         score="" if score is None else f"{float(score):.0f}",
         bench="" if bench is None else f"{bench:.0f}",
+        peer="" if peer_avg is None else f"{peer_avg:.0f}",
+        peer_kda="" if "KDA" not in peer else f"{peer['KDA']:.0f}",
     )
 
 
@@ -326,10 +462,8 @@ def roast_one(
     """
     candidates = evaluate_candidates(stats, ctx, streak)
     if not candidates:
-        candidates = [
-            (key, _WEIGHTS.get(key, 3))
-            for key in _fallback_keys(ctx["win"], is_positive(stats, ctx["win"], rng))
-        ]
+        positive = is_positive(stats, ctx["win"], ctx.get("peer"), rng)
+        candidates = [(key, _WEIGHTS.get(key, 3)) for key in _fallback_keys(ctx["win"], positive)]
 
     # 按权重抽维度，抽到的维度若句子都用过了则换下一个，全用过才允许重复
     pool = list(candidates)
@@ -362,11 +496,14 @@ def roast_players(
     streaks 为 {steam_id: (连胜, 连败)}，缺省表示无连胜/连败信息。
     """
     streaks = streaks or {}
+    # 全局 10 人百分位只算一次，供同局所有玩家复用
+    peers = peer_percentiles(match_info)
     used: set[str] = set()
     lines: list[str] = []
     for player in player_list:
         stats = player.stats
         ctx = team_context(match_info, stats.get("dota2_team"), stats)
+        ctx["peer"] = peers.get(player.short_steamID) or {}
         streak = streaks.get(player.short_steamID, (0, 0))
         lines.append(roast_one(stats, ctx, player.nickname, streak, used, rng))
     return "\n".join(lines)

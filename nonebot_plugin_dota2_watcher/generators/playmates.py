@@ -99,20 +99,12 @@ def build_html(
     avatar_uris: list[str],
     player_avatar_uri: str = "",
     theme: dict = THEME_LIGHT,
-    total_count: int | None = None,
 ) -> str:
     """构建完整的开黑记录 HTML 页面。
 
-    rows 为已截断的展示行；total_count 为开黑队友总数（默认取 len(rows)），
-    用于在总数超过展示上限时提示「仅展示前 N 位」。
+    rows 为已截断的展示行（已按共同场次降序）。
     """
-    total = len(rows) if total_count is None else int(total_count)
     head = f"{player_name}的开黑记录"
-    if total > len(rows):
-        subtitle = f"共 {total} 位开黑队友，仅展示前 {len(rows)} 位"
-    else:
-        subtitle = f"共 {total} 位开黑队友"
-    subtitle += "（按共同场次排序）"
 
     title_avatar = ""
     if player_avatar_uri:
@@ -144,12 +136,8 @@ def build_html(
      width: 28.125rem;">
   <div style="display: flex; align-items: center; gap: 0.5625rem;">
     {title_avatar}
-    <div style="display: flex; flex-direction: column; gap: 0.1875rem;">
-      <div style="font-weight: 500; font-size: 1.5rem;
-           color: {theme["title_color"]};">{head}</div>
-      <div style="font-size: 0.975rem; line-height: 1.5rem;
-           color: {theme["desc_color"]};">{subtitle}</div>
-    </div>
+    <div style="font-weight: 500; font-size: 1.5rem;
+         color: {theme["title_color"]};">{head}</div>
   </div>
   <div style="display: flex; flex-direction: column; gap: 0.375rem;">
     {row_html}
@@ -176,9 +164,7 @@ async def generate_image(steam_id, theme: str | None = None, refresh: bool = Fal
     player_avatar_uri = await _avatar_data_uri(player_avatar)
 
     theme_dict = THEMES.get(theme, THEME_LIGHT)
-    html = build_html(
-        player_name, top, avatar_uris, player_avatar_uri, theme_dict, total_count=len(rows)
-    )
+    html = build_html(player_name, top, avatar_uris, player_avatar_uri, theme_dict)
 
     # 文件名带上风格，避免切换 d2w_image_theme 后仍命中另一风格的旧缓存图
     out_path = os.path.join(OUTPUT_DIR, f"playmates_{int(steam_id)}_{theme}.png")

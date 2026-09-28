@@ -56,7 +56,8 @@ class Config(BaseModel):
     d2w_all_nickname: str = "全体"
     # 不播报的游戏模式（见 dota_dicts.GAME_MODE）
     d2w_game_mode: list[int] = [15, 19]
-    # 评分标准（0~1），仅 openDota 支持
+    # 锐评正负倾向判定阈值（0~1）：小黑盒综合分 / openDota benchmark 可用时，
+    # 高于该值视为表现偏正面；两者都不可用时退化为 KDA 经验判断
     d2w_benchmark_threshold: float = 0.5
 
     # ===================== 图片风格 =====================
@@ -78,6 +79,8 @@ class Config(BaseModel):
     d2w_roster_poll_interval: int = 21600
     # 拉取玩家比赛历史时的并发上限（Steam 接口存在速率限制，过大易触发 429/503）
     d2w_history_concurrency: int = 3
+    # 计算连胜/连败时回溯的最近场次上限（OpenDota players/matches 接口）
+    d2w_streak_history_limit: int = 20
 
     # ===================== 缓存 =====================
     # 数据缓存时长（秒）
@@ -242,6 +245,8 @@ NPC_ABILITY_IDS_URL = f"{GH_PROXY}/https://raw.githubusercontent.com/dotabuff/d2
 # OpenDota
 OPENDOTA_BASE = "https://api.opendota.com"
 OPENDOTA_MATCH_URL = f"{OPENDOTA_BASE}/api/matches/{{match_id}}"
+# 玩家最近比赛列表（含胜负，用于连胜/连败统计）
+OPENDOTA_PLAYER_MATCHES_URL = f"{OPENDOTA_BASE}/api/players/{{account_id}}/matches"
 OPENDOTA_REQUEST_URL = f"{OPENDOTA_BASE}/api/request/{{match_id}}"
 OPENDOTA_LOGS_URL = f"{OPENDOTA_BASE}/logs/{{job_id}}"
 OPENDOTA_HEROES_URL = f"{OPENDOTA_BASE}/api/constants/heroes"

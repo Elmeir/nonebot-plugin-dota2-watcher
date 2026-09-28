@@ -5,7 +5,7 @@
 ## 功能特性
 
 - **开黑战报**：输入比赛编号，生成包含对局详情与 MVP 评分的战报图片（基于 OpenDota）。
-- **玩家比赛播报**：添加 / 查看 / 删除订阅玩家，自动轮询其最新比赛并生成战报推送。
+- **玩家比赛播报**：添加 / 查看 / 删除订阅玩家，自动轮询其最新比赛，推送战报图片，并为同局**每位订阅玩家各配一句阴阳怪气锐评**（从 KDA、补刀、经济、输出、参团、连胜 / 连败、英雄梗、时长、评分等多个维度加权随机判定，语句见 `dota_dicts.ROAST_LINES`）。
 - **新闻推送**：DOTA2 官方新闻出现新头条时自动向群广播。
 - **TI 赛事**：定时拉取 TI 赛果并推送，支持 `/ti` 查看实时战报图片。
 - **D2PT 出装**：查询 D2PT 各位置胜率 / 线优数据，以及指定英雄的核心出装图片（支持明暗主题）。
@@ -74,7 +74,8 @@ nonebot.run()
 | **播报与内容**                   |                                                                              |            |
 | `D2W_ALL_NICKNAME`             | “全体”播报的昵称关键字                                                                 | `全体`       |
 | `D2W_GAME_MODE`                | 不播报的游戏模式列表                                                                   | `[15, 19]` |
-| `D2W_BENCHMARK_THRESHOLD`      | 评分标准（0\~1，仅 OpenDota 支持）                                                     | `0.5`      |
+| `D2W_BENCHMARK_THRESHOLD`      | 锐评正负倾向判定阈值（0\~1，小黑盒综合分 / OpenDota benchmark 可用时生效）              | `0.5`      |
+| `D2W_STREAK_HISTORY_LIMIT`     | 统计连胜 / 连败时回溯的最近场次上限（OpenDota 玩家比赛列表）                              | `20`       |
 | **图片风格**                     |                                                                              |            |
 | `D2W_IMAGE_THEME`              | 图片生成风格统一默认值：`light`（亮色）/ `dark`（暗色）；作用于 `/出装`、`/开黑`、`/英雄池`，命令上的 `dark\|light` 参数可临时覆盖 | `light`    |
 | **定时任务**                     |                                                                              |            |
@@ -148,7 +149,7 @@ nonebot_plugin_dota2_watcher/     # 插件包
 ├── __init__.py              # 插件入口与元数据
 ├── config.py                # 插件配置
 ├── utils.py                 # 网络请求与通用工具
-├── dota_dicts.py            # DOTA2 静态字典
+├── dota_dicts.py            # DOTA2 静态字典（含锐评语句库 ROAST_LINES）
 ├── hero_nicknames.py        # 英雄昵称映射
 ├── handlers/                # NoneBot 交互层
 │   ├── commands.py          # 命令处理器
@@ -169,7 +170,8 @@ nonebot_plugin_dota2_watcher/     # 插件包
 │   └── pro_names.py         # OpenDota 职业选手表共享缓存（职业名）
 ├── generators/              # 图片 / 文本生成
 │   ├── core_build.py        # 核心出装图生成
-│   ├── match_builder.py     # 开黑战报生成
+│   ├── match_builder.py     # 开黑战报生成（一句话锐评 + 图片调度）
+│   ├── roast.py             # 阴阳怪气（锐评）多维度判定与加权随机
 │   ├── match_report.py      # 战报图片绘制
 │   ├── hero_pool.py         # 英雄池环形图生成
 │   ├── playmates.py         # 开黑记录图生成

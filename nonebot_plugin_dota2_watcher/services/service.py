@@ -22,10 +22,11 @@ from ..datasources.request_match import (
     request_match_history,
     request_match_info_opendota,
     request_news,
+    request_recent_matches,
 )
 from ..generators import core_build, hero_pool, match_builder
 from ..generators import playmates as playmates_gen
-from ..utils import load_cache, run_single_flight
+from ..utils import load_cache, player_team, run_single_flight
 from . import store
 from .player import Player
 
@@ -493,10 +494,97 @@ async def _fetch_history(player: Player) -> int | None:
         return None
 
 
+def _is_win(match: dict) -> bool | None:
+    """由 OpenDota 最近比赛条目判断该玩家是否获胜；字段缺失时返回 None。"""
+    radiant_win = match.get("radiant_win")
+    slot = match.get("player_slot")
+    if radiant_win is None or slot is None:
+        return None
+    return bool(radiant_win) == (int(slot) < 128)
+
+
+def count_streak(
+    matches: list[dict],
+    current_match_id=None,
+    current_win: bool | None = None,
+) -> tuple[int, int]:
+    """统计最近比赛的连胜 / 连败场次（含正在进行播报的这一场）。
+
+    matches 为按时间倒序的最近比赛列表（OpenDota players/matches）。
+    当前战报对应的比赛刚打完，OpenDota 列表可能尚未刷新：若它不在列表里，
+    则按本局结果（current_win）在最前面补一场再统计。
+    返回 (连胜场数, 连败场数)，二者必有一个为 0。
+    """
+    results: list[bool] = []
+    for match in matches:
+        win = _is_win(match)
+        if win is not None:
+            results.append(win)
+
+    ids = {int(m.get("match_id") or 0) for m in matches}
+    if current_win is not None and (current_match_id is None or int(current_match_id) not in ids):
+        results.insert(0, bool(current_win))
+
+    if not results:
+        return 0, 0
+
+    first = results[0]
+    count = 0
+    for win in results:
+        if win != first:
+            break
+        count += 1
+    return (count, 0) if first else (0, count)
+
+
+def _player_win(match_info: dict, account_id: int) -> bool | None:
+    """从比赛详情判断某玩家是否获胜；找不到该玩家或缺少结果字段时返回 None。"""
+    radiant_win = match_info.get("radiant_win")
+    if radiant_win is None:
+        return None
+    for info in match_info.get("players") or []:
+        if info.get("account_id", 0) == account_id:
+            team = player_team(info)
+            if team is None:
+                return None
+            return bool(radiant_win) if team == 0 else not bool(radiant_win)
+    return None
+
+
+async def _fetch_streaks(player_list: list, match_info: dict) -> dict[int, tuple[int, int]]:
+    """并发拉取各玩家的最近比赛，统计含本局的连胜 / 连败。
+
+    任一位玩家拉取失败时该项退化为 (0, 0)，不影响锐评其余维度。
+    """
+    results = await asyncio.gather(
+        *(request_recent_matches(p.short_steamID) for p in player_list),
+        return_exceptions=True,
+    )
+    streaks: dict[int, tuple[int, int]] = {}
+    for player, matches in zip(player_list, results):
+        if isinstance(matches, Exception) or not matches:
+            streaks[player.short_steamID] = (0, 0)
+            continue
+        # 本局胜负由比赛详情给出，比依赖列表是否已刷新更可靠
+        streaks[player.short_steamID] = count_streak(
+            matches,
+            current_match_id=match_info.get("match_id"),
+            current_win=_player_win(match_info, player.short_steamID),
+        )
+    return streaks
+
+
 async def _report_match(match: NewMatch) -> None:
-    """生成并发送一场比赛的战报（图片 + 一句话播报）。"""
+    """生成并发送一场比赛的战报（图片 + 一句话锐评）。"""
+    # 连胜/连败是锐评的一个维度，取不到时不影响其余维度
     try:
-        text = match_builder.generate_message(match.match_info, match.players, ezmode=True)
+        streaks = await _fetch_streaks(match.players, match.match_info)
+    except Exception:
+        logger.exception(f"连胜/连败统计失败: {match.match_id}")
+        streaks = {}
+
+    try:
+        text = match_builder.generate_message(match.match_info, match.players, streaks)
     except Exception:
         logger.exception(f"生成战报文本失败: {match.match_id}")
         text = None

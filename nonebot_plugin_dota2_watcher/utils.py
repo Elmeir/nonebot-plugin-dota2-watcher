@@ -160,6 +160,27 @@ def download_file(url, filepath, timeout=None, headers=None, quiet=False, retrie
     return True
 
 
+def player_team(info: dict) -> int | None:
+    """判断比赛详情中某玩家所属阵营（0 天辉 / 1 夜魇）；无法判断时返回 None。
+
+    优先用 team_number；部分数据源（精简过的缓存、早期 OpenDota 响应）没有该
+    字段，回退到 player_slot（<128 为天辉），与 OpenDota / 小黑盒口径一致。
+    """
+    team = info.get("team_number")
+    if team is not None:
+        try:
+            return int(team)
+        except (TypeError, ValueError):
+            return None
+    slot = info.get("player_slot")
+    if slot is None:
+        return None
+    try:
+        return 0 if int(slot) < 128 else 1
+    except (TypeError, ValueError):
+        return None
+
+
 def loadjson(filepath, default=None):
     """读取 JSON 文件，成功返回解析结果，失败返回 default（默认空 dict）。
 

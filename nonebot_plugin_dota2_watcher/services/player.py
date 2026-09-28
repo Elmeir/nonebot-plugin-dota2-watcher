@@ -3,6 +3,8 @@
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..utils import player_team
+
 
 @dataclass
 class Player:
@@ -44,7 +46,7 @@ class Player:
             "death": deaths,
             "assist": assists,
             "kda": (kills + assists) / max(deaths, 1),
-            "dota2_team": info.get("team_number"),
+            "dota2_team": player_team(info),
             "hero": info.get("hero_id"),
             "last_hit": info.get("last_hits", 0),
             "damage": info.get("hero_damage", 0),

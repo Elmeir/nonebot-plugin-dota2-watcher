@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from ..config import (
     OPENDOTA_MATCH_URL,
+    OPENDOTA_PLAYER_MATCHES_URL,
     STEAM_MATCH_DETAILS_URL,
     STEAM_MATCH_HISTORY_URL,
     STEAM_NEWS_URL,
@@ -60,6 +61,24 @@ async def request_match_info_opendota(match_id: int, api_key: str | None = None)
     返回空或没有玩家数据时，改由小黑盒公开接口兜底（无需 Cookie / 登录）。
     """
     return await _fetch_opendota_match(match_id) or await request_match_info_xiaoheihe(match_id)
+
+
+async def request_recent_matches(account_id: int, limit: int | None = None) -> list[dict]:
+    """拉取玩家最近比赛列表（含胜负），用于统计连胜/连败。
+
+    使用 OpenDota 免 Key 的 players/{id}/matches 接口，按时间倒序返回；
+    请求失败或无数据时返回空列表（连胜/连败只是锐评的一个可选维度，
+    取不到时不应影响战报本身）。
+    """
+    limit = limit or config.d2w_streak_history_limit
+    try:
+        data = await get_json(
+            OPENDOTA_PLAYER_MATCHES_URL.format(account_id=int(account_id)),
+            params={"limit": int(limit)},
+        )
+    except Exception:
+        return []
+    return data if isinstance(data, list) else []
 
 
 async def request_news() -> dict:

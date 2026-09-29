@@ -556,20 +556,20 @@ def _lines_for(key: str, win: bool) -> list[str]:
 
 
 def _format_kwargs(stats: dict, ctx: dict, name: str, streak: tuple[int, int]) -> _SafeDict:
-    """句子模板可用的占位符集合。"""
+    """句子模板可用的占位符集合。
+
+    只保留句库里真正在用的占位符：锐评是把结论说出来，不是把数据表念一遍，
+    因此 KDA / GPM / 伤害占比 / 参战率这些「字段名 + 数值」的写法已经从句库
+    里去掉，对应的占位符也一并删掉（测试会校验两边完全一致，避免留下死占位符，
+    也避免模板引用了没提供的占位符而渲染出字面的 `{xxx}`）。
+    """
     win_streak, lose_streak = streak
     return _SafeDict(
         name=name,
         hero=_hero_name(stats.get("hero")),
-        kda=f"{float(stats.get('kda') or 0):.2f}",
         kills=int(stats.get("kill") or 0),
         deaths=int(stats.get("death") or 0),
         assists=int(stats.get("assist") or 0),
-        gpm=int(stats.get("gpm") or 0),
-        dmg=int(stats.get("damage") or 0),
-        dmg_rate=f"{ctx['damage_rate']:.0f}",
-        death_rate=f"{ctx['death_rate']:.0f}",
-        part=f"{ctx['participation']:.0f}",
         dur_min=ctx["dur_min"],
         n=max(win_streak, lose_streak),
     )

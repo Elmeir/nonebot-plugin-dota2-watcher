@@ -40,7 +40,7 @@
 import random
 
 from ..config import config
-from ..dota_dicts import HEROES_LIST_CHINESE, MEME_HEROES, ROAST_LINES
+from ..dota_dicts import HERO_MEMES, HEROES_LIST_CHINESE, ROAST_LINES  # noqa: I001
 from ..utils import player_team
 
 # OpenDota benchmark 中不参与评价的字段（与旧版保持一致）
@@ -515,9 +515,10 @@ def evaluate_candidates(
     elif gpm_polarity == -1:
         hit("gpm_low")
 
-    # ---- 英雄梗 ----
+    # ---- 英雄梗（每个英雄自己一套词，见 dota_dicts.HERO_MEMES）----
+    # 句子库留空的英雄直接跳过，不触发这个维度。
     try:
-        if int(stats.get("hero")) in MEME_HEROES:
+        if _hero_lines(int(stats.get("hero")), win):
             hit("hero_meme")
     except (TypeError, ValueError):
         pass
@@ -545,13 +546,40 @@ def evaluate_candidates(
     return hits
 
 
-def _lines_for(key: str, win: bool) -> list[str]:
+def _hero_id_of(stats: dict) -> int | None:
+    """从玩家数据里取英雄 ID；缺失或非法时返回 None。"""
+    try:
+        return int(stats.get("hero"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _hero_lines(hero_id: int | None, win: bool) -> list[str]:
+    """取某个英雄的专属梗句库（按胜负分组）。
+
+    英雄梗不是「同一批句子套在不同人身上」，而是每个英雄自己一套词——
+    通用句套在米波身上没梗，得说这个英雄自己的笑话。见 dota_dicts.HERO_MEMES。
+
+    该英雄没有配句子（两个键都留空）时返回空列表，调用方据此跳过这个维度。
+    """
+    if hero_id is None:
+        return []
+    group = HERO_MEMES.get(int(hero_id)) or {}
+    return list(group.get("win" if win else "lose") or [])
+
+
+def _lines_for(key: str, win: bool, hero_id: int | None = None) -> list[str]:
     """取某维度的句库，按本局胜负选择对应后缀的那一组。
 
     锐评必须与本局胜负挂钩：同一个数据赢了和输了是两种说法。句库里除
     win_* / lose_* / streak_* 外的维度都拆成了 `<key>_win` / `<key>_lose`
     两组，这里按 win 取；取不到再退回无后缀的 key（兼容未拆分的维度）。
+
+    hero_meme 例外：它不走 ROAST_LINES，而是取该英雄自己的 HERO_MEMES 句子，
+    需要 hero_id 才能查到；没有配句子的英雄返回空列表，维度自然不命中。
     """
+    if key == "hero_meme":
+        return _hero_lines(hero_id, win)
     return ROAST_LINES.get(f"{key}_win" if win else f"{key}_lose") or ROAST_LINES.get(key) or []
 
 
@@ -599,6 +627,52 @@ def _resolve_polarity(candidates: list[tuple[str, int]], positive: bool) -> list
     return filtered or candidates
 
 
+def _candidates_for(stats: dict, ctx: dict, streak: tuple[int, int]) -> list[tuple[str, int]]:
+    """本局的候选维度及权重（含极性裁决；没命中具体维度时回退到兜底组）。"""
+    candidates = evaluate_candidates(stats, ctx, streak)
+    positive = is_positive(stats, ctx["win"], ctx.get("peer"), ctx.get("peer_total", 0))
+    if candidates:
+        return _resolve_polarity(candidates, positive)
+    return [(key, _WEIGHTS.get(key, 3)) for key in _fallback_keys(ctx["win"], positive)]
+
+
+def _pick_key(candidates: list[tuple[str, int]], win: bool, rng, hero_id=None) -> str | None:
+    """按权重抽一个维度；抽到的维度若没有句子就换下一个。
+
+    英雄梗要按英雄查句子，因此这里要把 hero_id 透传给 _lines_for，
+    否则配了空句库的英雄会被误判成「有句子」而抽中后渲染不出内容。
+    """
+    pool = list(candidates)
+    for _ in range(len(pool)):
+        keys = [k for k, _ in pool]
+        weights = [w for _, w in pool]
+        key = rng.choices(keys, weights=weights, k=1)[0]
+        if _lines_for(key, win, hero_id):
+            return key
+        pool = [(k, w) for k, w in pool if k != key]
+    return None
+
+
+def _render_one(
+    key: str,
+    stats: dict,
+    ctx: dict,
+    name: str,
+    streak: tuple[int, int],
+    used: set[str] | None,
+    rng,
+) -> str | None:
+    """渲染指定维度的一句；该维度没句子时返回 None。"""
+    lines = _lines_for(key, ctx["win"], _hero_id_of(stats))
+    if not lines:
+        return None
+    fresh = [ln for ln in lines if ln not in (used or ())]
+    line = rng.choice(fresh or lines)
+    if used is not None:
+        used.add(line)
+    return line.format_map(_format_kwargs(stats, ctx, name, streak))
+
+
 def roast_one(
     stats: dict,
     ctx: dict,
@@ -611,31 +685,32 @@ def roast_one(
 
     used 为同一场比赛内已用过的句子集合，用于尽量避免同局多人撞词。
     """
-    candidates = evaluate_candidates(stats, ctx, streak)
-    positive = is_positive(stats, ctx["win"], ctx.get("peer"), ctx.get("peer_total", 0))
-    if candidates:
-        candidates = _resolve_polarity(candidates, positive)
-    else:
-        candidates = [(key, _WEIGHTS.get(key, 3)) for key in _fallback_keys(ctx["win"], positive)]
-
-    # 按权重抽维度，抽到的维度若句子都用过了则换下一个，全用过才允许重复
-    pool = list(candidates)
-    kwargs = _format_kwargs(stats, ctx, name, streak)
-    for _ in range(len(pool)):
-        keys = [k for k, _ in pool]
-        weights = [w for _, w in pool]
-        key = rng.choices(keys, weights=weights, k=1)[0]
-        lines = _lines_for(key, ctx["win"])
-        if not lines:
-            pool = [(k, w) for k, w in pool if k != key]
-            continue
-        fresh = [ln for ln in lines if ln not in (used or ())]
-        line = rng.choice(fresh or lines)
-        if used is not None:
-            used.add(line)
-        return line.format_map(kwargs)
-    # 理论上不会走到这里（pool 非空且至少有一个维度有句子）
+    key = _pick_key(_candidates_for(stats, ctx, streak), ctx["win"], rng, _hero_id_of(stats))
+    if key is not None:
+        line = _render_one(key, stats, ctx, name, streak, used, rng)
+        if line:
+            return line
+    # 理论上不会走到这里（候选非空且至少有一个维度有句子）
     return f"{name}这局打得一言难尽"
+
+
+def _join_names(names: list[str]) -> str:
+    """把多个人的名字并成一个主语：「A」「A和B」「A、B和C」。"""
+    if len(names) == 1:
+        return names[0]
+    if len(names) == 2:
+        return f"{names[0]}和{names[1]}"
+    return f"{'、'.join(names[:-1])}和{names[-1]}"
+
+
+# 合并成一句时句子里不能出现「每个人各自不同的数据」：同一句装不下多份数字，
+# 硬套第一个人的数值等于替别人报错数据。{dur_min} 是全场共享的，不受影响。
+_MERGE_BLOCKERS = ("{kills}", "{deaths}", "{assists}", "{hero}", "{n}")
+
+
+def _merge_safe(line: str) -> bool:
+    """这句能不能同时套在多人身上（不含各自的数值 / 英雄 / 连胜场数）。"""
+    return not any(p in line for p in _MERGE_BLOCKERS)
 
 
 def roast_players(
@@ -644,7 +719,12 @@ def roast_players(
     streaks: dict[int, tuple[int, int]] | None = None,
     rng=random,
 ) -> str:
-    """为一局中的每位订阅玩家各生成一句锐评，返回多行文本。
+    """为一局中的每位订阅玩家生成锐评，返回多行文本。
+
+    同一条消息里若有多人抽中同一个维度，合并成一句一起说（「P1、P3 和 P5 野区
+    都快被你们躺成坟场了」），而不是每人来一句相似的——同样的句式连着刷三遍
+    读起来很啰嗦。合并只在句子不含各自的数值 / 英雄 / 连胜场数时进行：一句
+    装不下多份数字，硬套第一个人的数值等于替别人报错数据。
 
     streaks 为 {steam_id: (连胜, 连败)}，缺省表示无连胜/连败信息。
     """
@@ -652,11 +732,47 @@ def roast_players(
     # 同场 10 人名次只算一次，供同局所有玩家复用
     ranks = peer_ranks(match_info)
     used: set[str] = set()
-    lines: list[str] = []
+
+    # 先给每人定下维度，再按维度归堆——合并必须在选句之前做
+    picks: list[tuple[str, dict, dict, tuple[int, int], str]] = []
     for player in player_list:
         stats = player.stats
         ctx = team_context(match_info, stats.get("dota2_team"), stats)
         ctx["peer"] = ranks.get(player.short_steamID) or {}
         streak = streaks.get(player.short_steamID, (0, 0))
-        lines.append(roast_one(stats, ctx, player.nickname, streak, used, rng))
+        key = _pick_key(_candidates_for(stats, ctx, streak), ctx["win"], rng, _hero_id_of(stats))
+        if key is not None:
+            picks.append((key, stats, ctx, streak, player.nickname))
+
+    groups: dict[str, list] = {}
+    order: list[str] = []
+    for item in picks:
+        if item[0] not in groups:
+            groups[item[0]] = []
+            order.append(item[0])
+        groups[item[0]].append(item)
+
+    lines: list[str] = []
+    for key in order:
+        members = groups[key]
+        _, stats, ctx, streak, _ = members[0]
+        if len(members) > 1:
+            # 只取能同时套在所有人身上的句子；没有就还是各说各的
+            pool = [ln for ln in _lines_for(key, ctx["win"], _hero_id_of(stats)) if _merge_safe(ln)]
+            if pool:
+                fresh = [ln for ln in pool if ln not in used]
+                line = rng.choice(fresh or pool)
+                used.add(line)
+                # 多人并成一句后，「你」要跟着变成「你们」，否则主谓对不上
+                if "你们" not in line:
+                    line = line.replace("你", "你们")
+                lines.append(
+                    line.format_map(
+                        _format_kwargs(stats, ctx, _join_names([m[4] for m in members]), streak)
+                    )
+                )
+                continue
+        for _, m_stats, m_ctx, m_streak, m_name in members:
+            line = _render_one(key, m_stats, m_ctx, m_name, m_streak, used, rng)
+            lines.append(line or f"{m_name}这局打得一言难尽")
     return "\n".join(lines)

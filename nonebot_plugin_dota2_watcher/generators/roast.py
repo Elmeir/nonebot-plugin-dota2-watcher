@@ -515,14 +515,6 @@ def evaluate_candidates(
     elif gpm_polarity == -1:
         hit("gpm_low")
 
-    # ---- 英雄梗（每个英雄自己一套词，见 dota_dicts.HERO_MEMES）----
-    # 句子库留空的英雄直接跳过，不触发这个维度。
-    try:
-        if _hero_lines(int(stats.get("hero")), win):
-            hit("hero_meme")
-    except (TypeError, ValueError):
-        pass
-
     # ---- 比赛时长（duration 缺失的简化数据源不参与，避免「1 分钟速通」这类误判）
     # 用「等效普通模式时长」：加速模式同样的真实时长推进量翻倍 ----
     if ctx["duration"] > 0:
@@ -542,6 +534,24 @@ def evaluate_candidates(
             hit("kda_trash")
         elif kda <= 1.5 and extreme("KDA", -1):
             hit("kda_low")
+
+    # ---- 英雄梗（每个英雄自己一套词，见 dota_dicts.HERO_MEMES）----
+    # 放在最后判定：要先看完上面所有维度，才知道本局有没有落在「两极」。
+    # 只在两极时参与选句：赢了且命中正面维度（高数据的赢），或输了且命中
+    # 负面维度（低数据的输）。中间地带不吐槽选人——赢了但数据难看时再损一句
+    # 选人就是雪上加霜，输了但数据好看时尬吹也没意思。
+    #
+    # 权重取「其余维度权重之和」，这样它与原来的维度整体各占一半概率。
+    # 句子库留空的英雄（_hero_lines 返回空）直接跳过，不参与。
+    if _hero_lines(_hero_id_of(stats), win):
+        if win:
+            pole = any(_POLARITY.get(k, 0) > 0 for k, _ in hits)
+        else:
+            pole = any(_POLARITY.get(k, 0) < 0 for k, _ in hits)
+        if pole:
+            other = sum(w for _, w in hits)
+            if other:
+                hits.append(("hero_meme", other))
 
     return hits
 
@@ -653,6 +663,20 @@ def _pick_key(candidates: list[tuple[str, int]], win: bool, rng, hero_id=None) -
     return None
 
 
+def _split_hero(
+    candidates: list[tuple[str, int]],
+) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
+    """把候选拆成「数据维度」与「英雄梗」两组。
+
+    英雄梗是每人自己的英雄，含 {hero} 因此永远不会合并成一句（见
+    _merge_safe）。多人共享一个数据维度时，若让其中某人随机抽中英雄梗，
+    这一句就合并不起来了——所以归堆阶段只按数据维度定位。
+    """
+    dims = [(k, w) for k, w in candidates if k != "hero_meme"]
+    hero = [(k, w) for k, w in candidates if k == "hero_meme"]
+    return dims, hero
+
+
 def _render_one(
     key: str,
     stats: dict,
@@ -726,6 +750,10 @@ def roast_players(
     读起来很啰嗦。合并只在句子不含各自的数值 / 英雄 / 连胜场数时进行：一句
     装不下多份数字，硬套第一个人的数值等于替别人报错数据。
 
+    多人共享同一个数据维度时，优先让这个维度合并成一句，不再给其中某人随机
+    换成英雄梗——英雄梗含 {hero}，本来就合并不起来，随机塞进去会把该合的
+    那一句拆散。英雄梗只在某人**单独**命中（没人跟他同维度）时才参与抽取。
+
     streaks 为 {steam_id: (连胜, 连败)}，缺省表示无连胜/连败信息。
     """
     streaks = streaks or {}
@@ -733,16 +761,20 @@ def roast_players(
     ranks = peer_ranks(match_info)
     used: set[str] = set()
 
-    # 先给每人定下维度，再按维度归堆——合并必须在选句之前做
-    picks: list[tuple[str, dict, dict, tuple[int, int], str]] = []
+    # 先按「数据维度」给每人定位，再归堆——合并必须在选句之前做。
+    # 英雄梗不参与这一步：它含 {hero}，永远合并不起来，会让该合的合不上。
+    picks: list[tuple[str, dict, dict, tuple[int, int], str, int | None]] = []
     for player in player_list:
         stats = player.stats
         ctx = team_context(match_info, stats.get("dota2_team"), stats)
         ctx["peer"] = ranks.get(player.short_steamID) or {}
         streak = streaks.get(player.short_steamID, (0, 0))
-        key = _pick_key(_candidates_for(stats, ctx, streak), ctx["win"], rng, _hero_id_of(stats))
-        if key is not None:
-            picks.append((key, stats, ctx, streak, player.nickname))
+        hero_id = _hero_id_of(stats)
+        dims, _hero = _split_hero(_candidates_for(stats, ctx, streak))
+        key = _pick_key(dims, ctx["win"], rng, hero_id)
+        if key is None:
+            continue
+        picks.append((key, stats, ctx, streak, player.nickname, hero_id))
 
     groups: dict[str, list] = {}
     order: list[str] = []
@@ -755,10 +787,10 @@ def roast_players(
     lines: list[str] = []
     for key in order:
         members = groups[key]
-        _, stats, ctx, streak, _ = members[0]
+        _, m0_stats, m0_ctx, m0_streak, _, m0_hero = members[0]
         if len(members) > 1:
             # 只取能同时套在所有人身上的句子；没有就还是各说各的
-            pool = [ln for ln in _lines_for(key, ctx["win"], _hero_id_of(stats)) if _merge_safe(ln)]
+            pool = [ln for ln in _lines_for(key, m0_ctx["win"], m0_hero) if _merge_safe(ln)]
             if pool:
                 fresh = [ln for ln in pool if ln not in used]
                 line = rng.choice(fresh or pool)
@@ -768,11 +800,15 @@ def roast_players(
                     line = line.replace("你", "你们")
                 lines.append(
                     line.format_map(
-                        _format_kwargs(stats, ctx, _join_names([m[4] for m in members]), streak)
+                        _format_kwargs(
+                            m0_stats, m0_ctx, _join_names([m[4] for m in members]), m0_streak
+                        )
                     )
                 )
                 continue
-        for _, m_stats, m_ctx, m_streak, m_name in members:
-            line = _render_one(key, m_stats, m_ctx, m_name, m_streak, used, rng)
+        for _, m_stats, m_ctx, m_streak, m_name, m_hero in members:
+            # 单独命中：英雄梗这时才参与（仍在两极约束下，见 evaluate_candidates）
+            solo = _pick_key(_candidates_for(m_stats, m_ctx, m_streak), m_ctx["win"], rng, m_hero)
+            line = _render_one(solo or key, m_stats, m_ctx, m_name, m_streak, used, rng)
             lines.append(line or f"{m_name}这局打得一言难尽")
     return "\n".join(lines)

@@ -10,9 +10,10 @@
   比赛时长等都可独立命中，命中后按权重随机选一句。其中数据类维度都要求
   「本局全场最高 / 最低」才成立（见「同场对比」一条）。
 - **按独立数据来源组织判定**：K、D、A、输出、经济、参团各算一个来源，每个来源
-  内部用一条 if/elif 链，同一件事不会被拆成多个维度重复计数（例如 death_many 与
-  death_feed 互斥）。KDA 是 K/D/A 的派生量，因此只在 K/D/A 都没命中时兜底，
-  避免与它们重复表达同一个信息。
+  内部用一条 if/elif 链，同一件事不会被拆成多个维度重复计数。
+  KDA 是 (K+A)/D 的派生量，与 K / D / A 说的是同一件事，因此不单独成维度。
+  每个来源只保留一档：击杀 / 伤害只看「最高」，阵亡只看「最多」，
+  人头与输出不放「最低」档——低端数据交给兜底组与极性裁决表达。
 - **极性裁决**：一位玩家可能同时命中正面与负面维度（例如 12 杀 12 死），此时
   保留哪一边由 is_positive 的结论决定，而不是靠权重抽签（见 _resolve_polarity）。
   只命中单侧时不干预。
@@ -89,7 +90,7 @@ def _kda_of(info: dict) -> float:
 # 对比范围是同场 10 人，因此与模式无关，不需要按加速模式折算。
 _PEER_METRICS = (
     ("KDA", _kda_of, True),
-    ("GPM", lambda p: float(p.get("gold_per_min") or 0), True),
+    ("补刀", lambda p: float(p.get("last_hits") or 0), True),
     ("输出", lambda p: float(p.get("hero_damage") or 0), True),
     ("阵亡", lambda p: float(p.get("deaths") or 0), False),
 )
@@ -108,47 +109,25 @@ _EXTREME_METRICS = (
     ("助攻", lambda p: float(p.get("assists") or 0), True),
 )
 
-# K、D、A 各自的绝对值维度：任一命中就说明这三个原始量已经说过话了，
-# KDA（(K+A)/D 的派生量）不再重复参与。
-_KDA_SOURCES = {
-    "kill_many",
-    "kill_zero",
-    "death_zero",
-    "death_many",
-    "death_feed",
-    "assist_many",
-}
-
 # 维度极性：+1 正面（夸）/ -1 负面（骂）/ 0 中性（与数据高低无关）。
 # 一位玩家可能同时命中正面与负面维度（例如 12 杀 12 死），此时用哪一边
 # 不能靠权重抛硬币，而应由 is_positive 的结论（评分 / benchmark / 同场名次，
 # 最终兜底本局胜负）裁决——这就是「高数据走胜利分支、低数据走失败分支」。
 _POLARITY = {
     # 正面
-    "kda_god": 1,
-    "kda_high": 1,
     "kill_many": 1,
     "assist_many": 1,
-    "death_zero": 1,
-    "gpm_high": 1,
+    "lh_high": 1,
     "dmg_carry": 1,
-    "dmg_huge": 1,
     "teamfight_high": 1,
     "streak_win": 1,
     # 负面
-    "kda_low": -1,
-    "kda_trash": -1,
-    "kill_zero": -1,
     "death_many": -1,
-    "death_feed": -1,
-    "gpm_low": -1,
-    "dmg_low": -1,
     "teamfight_low": -1,
     "streak_lose": -1,
     # 中性：英雄梗与时长不表达「打得好不好」，不参与极性裁决
     "hero_meme": 0,
     "long_game": 0,
-    "short_game": 0,
     # 兜底维度（无具体维度命中时才会出现，极性与其语气一致）
     "win_solid": 1,  # 赢了且数据高
     "win_plain": -1,  # 赢了但数据低（侥幸 / 躺赢）
@@ -272,34 +251,22 @@ _WEIGHTS = {
     # 连胜/连败（跨局信息，最具体）
     "streak_win": 11,
     "streak_lose": 11,
-    # 阵亡（D）
+    # 阵亡（D）：只留「死得最多」一档
     "death_many": 6,
-    "death_feed": 6,
-    "death_zero": 5,
-    # 输出（DMG，统一按占全队伤害比）
+    # 输出（DMG）：只留「最高」一档
     "dmg_carry": 7,
-    "dmg_huge": 7,
-    "dmg_low": 7,
-    # 经济（GPM 高不高看同场名次，见 peer_ranks）
-    "gpm_low": 6,
-    "gpm_high": 5,
-    # 击杀（K）
+    # 补刀（看同场名次，见 peer_ranks）：只留「最高」一档
+    "lh_high": 5,
+    # 击杀（K）：只留「最多」一档
     "kill_many": 5,
-    "kill_zero": 5,
     # 助攻（A）
     "assist_many": 4,
     # 参团（K+A 占全队击杀比，与 K/A 绝对值不是同一信息）
     "teamfight_low": 5,
     "teamfight_high": 4,
-    # KDA 综合（K/D/A 的派生量，仅在三者都没命中时兜底，故权重压低）
-    "kda_god": 5,
-    "kda_trash": 5,
-    "kda_high": 4,
-    "kda_low": 4,
     # 英雄梗 / 时长
     "hero_meme": 5,
     "long_game": 3,
-    "short_game": 3,
     # 兜底
     "win_solid": 3,
     "win_plain": 3,
@@ -445,11 +412,9 @@ def evaluate_candidates(
     win = ctx["win"]
     eq_dur_min = ctx["eq_dur_min"]
 
-    kda = float(stats.get("kda") or 0)
     kills = int(stats.get("kill") or 0)
     deaths = int(stats.get("death") or 0)
     assists = int(stats.get("assist") or 0)
-    damage = int(stats.get("damage") or 0)
 
     win_streak, lose_streak = streak
 
@@ -470,21 +435,14 @@ def evaluate_candidates(
 
     # 判定按「独立数据来源」组织，每个来源内部用一条 if/elif 链，保证
     # 同一件事不会被拆成多个维度重复计数（权重被重复计算）。
-    # KDA 是 K/D/A 的派生量，因此放在最后，只在 K/D/A 都没命中时兜底。
+    # KDA 是 (K+A)/D 的派生量，与 K / D / A 说的是同一件事，已整体移除。
 
-    # ---- 击杀（K）----
+    # ---- 击杀（K）：只留「最多」一档 ----
     if kills >= 12 and extreme("击杀", 1):
         hit("kill_many")
-    elif kills == 0 and extreme("击杀", -1):
-        hit("kill_zero")
 
-    # ---- 阵亡（D）：death_many 与 death_feed 是同义，取一个 ----
-    if deaths == 0 and extreme("阵亡", 1):
-        hit("death_zero")
-    elif deaths >= 5 and ctx["death_rate"] >= 30 and extreme("阵亡", -1):
-        # 死得多且占全队阵亡比例高，用更有节目效果的 death_feed
-        hit("death_feed")
-    elif deaths >= 8 and extreme("阵亡", -1):
+    # ---- 阵亡（D）：只留「死得最多」一档 ----
+    if deaths >= 8 and extreme("阵亡", -1):
         hit("death_many")
 
     # ---- 助攻（A）----
@@ -492,48 +450,28 @@ def evaluate_candidates(
         hit("assist_many")
 
     # ---- 参团（K+A 占全队击杀比，与上面 K/A 的绝对值不是同一信息）----
-    if ctx["participation"] <= 30 and extreme("参团", -1):
+    if ctx["participation"] <= 40 and extreme("参团", -1):
         hit("teamfight_low")
     elif ctx["participation"] >= 75 and extreme("参团", 1):
         hit("teamfight_high")
 
-    # ---- 输出（DMG）：统一用「占全队伤害比」，不再混用绝对值 ----
-    # 正面门槛提高到占比 30%：低于三成谈不上「把对面当木桩」。
+    # ---- 输出（DMG）：只留「最高」一档，按占全队伤害比判定 ----
     if ctx["damage_rate"] >= 35 and extreme("输出", 1):
         hit("dmg_carry")
-    elif damage >= 50000 and ctx["damage_rate"] >= 30 and extreme("输出", 1):
-        hit("dmg_huge")
-    elif ctx["damage_rate"] <= 10 and extreme("输出", -1):
-        hit("dmg_low")
 
-    # ---- 经济（GPM）：同场名次第一 / 最后一名 ----
-    # GPM 没有绝对值门槛（600 在弱场是碾压、在强场是垫底），因此名次不可得时
-    # 直接不判，不能像其他维度那样退回绝对值。
-    gpm_polarity = _rank_extreme(ranks, total, "GPM")
-    if gpm_polarity == 1:
-        hit("gpm_high")
-    elif gpm_polarity == -1:
-        hit("gpm_low")
+    # ---- 补刀（LH）：同场名次第一 ----
+    # 句库键为 lh_high，句子写的是「刷钱」「野区是你家开的」这类说法，
+    # 补刀正是刷钱的结果，语义成立。
+    # 没有绝对值门槛（100 刀在快节奏局是碾压、在膀胱局是垫底），因此名次
+    # 不可得时直接不判，不能像其他维度那样退回绝对值。只留「最高」一档。
+    if _rank_extreme(ranks, total, "补刀") == 1:
+        hit("lh_high")
 
-    # ---- 比赛时长（duration 缺失的简化数据源不参与，避免「1 分钟速通」这类误判）
-    # 用「等效普通模式时长」：加速模式同样的真实时长推进量翻倍 ----
-    if ctx["duration"] > 0:
-        if eq_dur_min >= 60:
-            hit("long_game")
-        elif eq_dur_min <= 20:
-            hit("short_game")
-
-    # ---- KDA 综合（K/D/A 的派生量）：只在 K、D、A 三者都没产出维度时兜底，
-    # 避免与上面三个来源重复计数（曾占 33% 权重，实际 67% 与其他维度重复）----
-    if not any(k in _KDA_SOURCES for k, _ in hits):
-        if kda >= 10 and extreme("KDA", 1):
-            hit("kda_god")
-        elif kda >= 6 and extreme("KDA", 1):
-            hit("kda_high")
-        elif kda <= 0.8 and extreme("KDA", -1):
-            hit("kda_trash")
-        elif kda <= 1.5 and extreme("KDA", -1):
-            hit("kda_low")
+    # ---- 比赛时长（duration 缺失的简化数据源不参与）----
+    # 用「等效普通模式时长」：加速模式同样的真实时长推进量翻倍。
+    # 只留「长」一档。
+    if ctx["duration"] > 0 and eq_dur_min >= 60:
+        hit("long_game")
 
     # ---- 英雄梗（每个英雄自己一套词，见 dota_dicts.HERO_MEMES）----
     # 放在最后判定：要先看完上面所有维度，才知道本局有没有落在「两极」。

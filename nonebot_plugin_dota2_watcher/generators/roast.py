@@ -647,12 +647,23 @@ def roast_one(
 
     used 为同一场比赛内已用过的句子集合，用于尽量避免同局多人撞词。
     """
-    key = _pick_key(_candidates_for(stats, ctx, streak), ctx["win"], rng, _hero_id_of(stats))
+    candidates = _candidates_for(stats, ctx, streak)
+    key = _pick_key(candidates, ctx["win"], rng, _hero_id_of(stats))
     if key is not None:
         line = _render_one(key, stats, ctx, name, streak, used, rng)
         if line:
             return line
-    # 理论上不会走到这里（候选非空且至少有一个维度有句子）
+    # 命中的维度在本局胜负下没有句子（例如 lh_high 只写了 _win 组），
+    # 退回兜底组——绝不能输出「这局打得一言难尽」这种占位文案。
+    fallback = _fallback_keys(
+        ctx["win"], is_positive(stats, ctx["win"], ctx.get("peer"), ctx.get("peer_total", 0))
+    )
+    key = _pick_key([(k, _WEIGHTS.get(k, 3)) for k in fallback], ctx["win"], rng)
+    if key is not None:
+        line = _render_one(key, stats, ctx, name, streak, used, rng)
+        if line:
+            return line
+    # 兜底组也取不到（句库被删空），用最后保底的一句
     return f"{name}这局打得一言难尽"
 
 
@@ -746,7 +757,7 @@ def roast_players(
                 continue
         for _, m_stats, m_ctx, m_streak, m_name, m_hero in members:
             # 单独命中：英雄梗这时才参与（仍在两极约束下，见 evaluate_candidates）
-            solo = _pick_key(_candidates_for(m_stats, m_ctx, m_streak), m_ctx["win"], rng, m_hero)
-            line = _render_one(solo or key, m_stats, m_ctx, m_name, m_streak, used, rng)
-            lines.append(line or f"{m_name}这局打得一言难尽")
+            # solo 为空（该维度在本局胜负下没句子）时走 roast_one 的兜底逻辑
+            line = roast_one(m_stats, m_ctx, m_name, m_streak, used, rng)
+            lines.append(line)
     return "\n".join(lines)

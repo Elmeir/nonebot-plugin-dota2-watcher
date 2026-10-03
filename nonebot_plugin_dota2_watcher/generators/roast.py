@@ -101,12 +101,11 @@ _PEER_METRICS = (
 PEER_TOP_RANK = 1
 
 # 「每个数据维度只看全场最高 / 全场最低」所用的指标，比 _PEER_METRICS 多出
-# 击杀 / 助攻：这几个维度也要收窄到极值，但不必参与偏正偏负的裁决。
+# 击杀：这个维度也要收窄到极值，但不必参与偏正偏负的裁决。
 # 「参团」要跨玩家汇总队伍击杀才能算，取值函数依赖 match_info，在 peer_ranks 内补。
 _EXTREME_METRICS = (
     *_PEER_METRICS,
     ("击杀", lambda p: float(p.get("kills") or 0), True),
-    ("助攻", lambda p: float(p.get("assists") or 0), True),
 )
 
 # 维度极性：+1 正面（夸）/ -1 负面（骂）/ 0 中性（与数据高低无关）。
@@ -116,7 +115,6 @@ _EXTREME_METRICS = (
 _POLARITY = {
     # 正面
     "kill_many": 1,
-    "assist_many": 1,
     "lh_high": 1,
     "dmg_carry": 1,
     "teamfight_high": 1,
@@ -259,9 +257,7 @@ _WEIGHTS = {
     "lh_high": 5,
     # 击杀（K）：只留「最多」一档
     "kill_many": 5,
-    # 助攻（A）
-    "assist_many": 4,
-    # 参团（K+A 占全队击杀比，与 K/A 绝对值不是同一信息）
+    # 参团（K+A 占全队击杀比，与 K 绝对值不是同一信息）
     "teamfight_low": 5,
     "teamfight_high": 4,
     # 英雄梗 / 时长
@@ -414,7 +410,6 @@ def evaluate_candidates(
 
     kills = int(stats.get("kill") or 0)
     deaths = int(stats.get("death") or 0)
-    assists = int(stats.get("assist") or 0)
 
     win_streak, lose_streak = streak
 
@@ -445,11 +440,7 @@ def evaluate_candidates(
     if deaths >= 8 and extreme("阵亡", -1):
         hit("death_many")
 
-    # ---- 助攻（A）----
-    if assists >= 20 and extreme("助攻", 1):
-        hit("assist_many")
-
-    # ---- 参团（K+A 占全队击杀比，与上面 K/A 的绝对值不是同一信息）----
+    # ---- 参团（K+A 占全队击杀比，与 K 的绝对值不是同一信息）----
     if ctx["participation"] <= 40 and extreme("参团", -1):
         hit("teamfight_low")
     elif ctx["participation"] >= 75 and extreme("参团", 1):
@@ -545,7 +536,6 @@ def _format_kwargs(stats: dict, ctx: dict, name: str, streak: tuple[int, int]) -
         hero=_hero_name(stats.get("hero")),
         kills=int(stats.get("kill") or 0),
         deaths=int(stats.get("death") or 0),
-        assists=int(stats.get("assist") or 0),
         dur_min=ctx["dur_min"],
         n=max(win_streak, lose_streak),
     )
@@ -712,7 +702,9 @@ def roast_players(
 
     # 先按「数据维度」给每人定位，再归堆——合并必须在选句之前做。
     # 英雄梗不参与这一步：它含 {hero}，永远合并不起来，会让该合的合不上。
-    picks: list[tuple[str, dict, dict, tuple[int, int], str, int | None]] = []
+    # key 可能为 None（命中的维度在本局胜负下没句子，例如 lh_high 只写了
+    # _win 组而本局是输局）：这类玩家不能丢，归到 None 组由 roast_one 兜底。
+    picks: list[tuple[str | None, dict, dict, tuple[int, int], str, int | None]] = []
     for player in player_list:
         stats = player.stats
         ctx = team_context(match_info, stats.get("dota2_team"), stats)
@@ -721,12 +713,10 @@ def roast_players(
         hero_id = _hero_id_of(stats)
         dims, _hero = _split_hero(_candidates_for(stats, ctx, streak))
         key = _pick_key(dims, ctx["win"], rng, hero_id)
-        if key is None:
-            continue
         picks.append((key, stats, ctx, streak, player.nickname, hero_id))
 
-    groups: dict[str, list] = {}
-    order: list[str] = []
+    groups: dict[str | None, list] = {}
+    order: list[str | None] = []
     for item in picks:
         if item[0] not in groups:
             groups[item[0]] = []
@@ -736,6 +726,11 @@ def roast_players(
     lines: list[str] = []
     for key in order:
         members = groups[key]
+        if key is None:
+            # 没有可用的数据维度：逐人走 roast_one（内含兜底组回退）
+            for _, m_stats, m_ctx, m_streak, m_name, _m_hero in members:
+                lines.append(roast_one(m_stats, m_ctx, m_name, m_streak, used, rng))
+            continue
         _, m0_stats, m0_ctx, m0_streak, _, m0_hero = members[0]
         if len(members) > 1:
             # 只取能同时套在所有人身上的句子；没有就还是各说各的

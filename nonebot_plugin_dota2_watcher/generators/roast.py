@@ -625,6 +625,30 @@ def _render_one(
     return line.format_map(_format_kwargs(stats, ctx, name, streak))
 
 
+def _solo_pool(
+    key: str,
+    stats: dict,
+    ctx: dict,
+    streak: tuple[int, int],
+    allow_hero: bool,
+) -> list[tuple[str, int]]:
+    """归堆之后，这个人真正还能抽的候选：数据维度**锁定为 key**。
+
+    归堆时已经按权重定了这个人说哪个维度，渲染时不能再抽一次——重抽有可能
+    抽回另一个维度，而那个维度可能已经被别的组说过了（7 人合并说了 long_game，
+    这位重抽又抽到 long_game），同一个维度就被说两遍。组与组的 key 互不相同，
+    锁定之后同一局里每个数据维度最多只说一次。
+
+    allow_hero 为真（此人独占这个维度）时才把英雄梗放回池子：多人共享维度时
+    英雄梗含 {hero} 合并不起来，塞进去只会把该合的那一句拆散。
+    """
+    return [
+        (k, w)
+        for k, w in _candidates_for(stats, ctx, streak)
+        if k == key or (allow_hero and k == "hero_meme")
+    ]
+
+
 def roast_one(
     stats: dict,
     ctx: dict,
@@ -632,12 +656,18 @@ def roast_one(
     streak: tuple[int, int] = (0, 0),
     used: set[str] | None = None,
     rng=random,
+    lock: str | None = None,
 ) -> str:
     """为一位玩家生成一句锐评。
 
     used 为同一场比赛内已用过的句子集合，用于尽量避免同局多人撞词。
+    lock 为归堆阶段定下的维度：给了就锁定它（至多再带上英雄梗），不再重新
+    抽签，避免把别的组已经说过的维度又说一遍（见 _solo_pool）。
     """
-    candidates = _candidates_for(stats, ctx, streak)
+    if lock is None:
+        candidates = _candidates_for(stats, ctx, streak)
+    else:
+        candidates = _solo_pool(lock, stats, ctx, streak, allow_hero=True)
     key = _pick_key(candidates, ctx["win"], rng, _hero_id_of(stats))
     if key is not None:
         line = _render_one(key, stats, ctx, name, streak, used, rng)
@@ -751,8 +781,8 @@ def roast_players(
                 )
                 continue
         for _, m_stats, m_ctx, m_streak, m_name, m_hero in members:
-            # 单独命中：英雄梗这时才参与（仍在两极约束下，见 evaluate_candidates）
-            # solo 为空（该维度在本局胜负下没句子）时走 roast_one 的兜底逻辑
-            line = roast_one(m_stats, m_ctx, m_name, m_streak, used, rng)
+            # 多人共享这个维度但句子都不可合并（例如 streak_* 每句都含 {n}）：
+            # 各说各的，但维度仍然锁死在这个 key 上，不许重抽到别人说过的维度。
+            line = roast_one(m_stats, m_ctx, m_name, m_streak, used, rng, lock=key)
             lines.append(line)
     return "\n".join(lines)

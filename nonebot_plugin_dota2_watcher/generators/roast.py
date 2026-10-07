@@ -6,9 +6,9 @@
   win_* / lose_* / streak_* 外的每个维度都拆成了 `<维度>_win` / `<维度>_lose`
   两组，每句都写明本局结果；选句时由 _lines_for 按胜负取后缀，
   不允许出现「结果中立」的句子。
-- **多维度判定**：KDA、阵亡、经济、输出、参团、人头、连胜连败、英雄梗、
-  比赛时长等都可独立命中，命中后按权重随机选一句。其中数据类维度都要求
-  「本局全场最高 / 最低」才成立（见「同场对比」一条）。
+- **多维度判定**：阵亡、补刀、输出、参团、人头、连胜连败、英雄梗、比赛时长等
+  都可独立命中，命中后按权重随机选一句。其中数据类维度都要求「本局全场最高 /
+  最低」才成立（见「同场对比」一条）。
 - **按独立数据来源组织判定**：K、D、A、输出、经济、参团各算一个来源，每个来源
   内部用一条 if/elif 链，同一件事不会被拆成多个维度重复计数。
   KDA 是 (K+A)/D 的派生量，与 K / D / A 说的是同一件事，因此不单独成维度。
@@ -24,14 +24,14 @@
   该维度的句库中随机取一句，从而让语句分支足够多、不总是同一类腔调。
 - **逐人评价**：同局多位订阅玩家各自独立判定（队伍数据按各自所在阵营计算），
   不做平均，返回每人一行。
-- **加速模式折算**：加速模式（game_mode=23）同样的真实时长里，进度约为普通模式的
-  两倍，因此「膀胱局 / 速通局」按等效普通模式时长判定。
+- **加速模式**：加速模式（game_mode=23）同样的真实时长里推进量约为普通模式的两倍，
+  因此膀胱局门槛按模式分别设定（普通 60 分钟 / 加速 40 分钟），不做等效时长折算。
 - **同场对比，且只看极值**：每个数据维度都收窄到「本局全场最高 / 最低」两种情况
-  （见 _rank_extreme / _extreme_ok）——同一个 GPM 在不同模式 / 英雄 / 位置下含义
-  不同，放回同场里才有可比性，也就不需要按模式折算。600 GPM 在弱场是碾压、在强场
+  （见 _rank_extreme / _extreme_ok）——同一个补刀数在不同模式 / 英雄 / 位置下含义
+  不同，放回同场里才有可比性，也就不需要按模式折算。600 刀在弱场是碾压、在强场
   是垫底，因此光过绝对值门槛还不够，必须是同场第一或最后一名；这样句子里
   「经济碾压」「人头被你承包了」这类结论才真的站得住。名次算不出来时（匿名玩家 /
-  数据源没给该项）退回纯绝对值门槛，避免整个维度失效；GPM 没有绝对值门槛，
+  数据源没给该项）退回纯绝对值门槛，避免整个维度失效；补刀没有绝对值门槛，
   名次不可得时直接不判。
 - **评价分支**：在「本局胜负」这条主轴之下，再用数据高低决定语气——
   高数据 → 正面（胜利口径）分支，低数据 → 负面（失败口径）分支；
@@ -59,9 +59,11 @@ STREAK_MIN = 3
 TURBO_MODE = 23
 # 小黑盒兜底数据源不返回 game_mode，只给原始中文模式文本（如"加速模式"）
 TURBO_MODE_DESC_KEYWORD = "加速"
-# 加速模式的进度倍率：同样的真实时长里，推进量约为普通模式的两倍，
-# 故「膀胱局 / 速通局」按等效普通模式时长判定
-TURBO_PROGRESS_MULTIPLIER = 2
+# 膀胱局门槛（真实分钟）。加速模式同样真实时长里的推进量约为普通模式的两倍，
+# 十几分钟就已经打完一轮，因此两个模式各设各的门槛，而不是折算成等效时长再比：
+# 普通模式要磨满 60 分钟，加速模式打到 40 分钟已经算拖沓。
+LONG_GAME_MIN_NORMAL = 60
+LONG_GAME_MIN_TURBO = 40
 
 
 def is_turbo(match_info: dict) -> bool:
@@ -338,9 +340,8 @@ def is_positive(
 def team_context(match_info: dict, team_number, stats: dict) -> dict:
     """按玩家所在阵营汇总队伍数据，供伤害/参团/阵亡占比等维度使用。
 
-    「等效时长」：加速模式（game_mode=23）同样的真实时长里推进量约为普通模式的
-    两倍，因此膀胱局 / 速通局按折算后的等效普通模式时长判定，否则加速模式十几分钟
-    的局会被误判成「速通局」。
+    时长只给真实分钟（dur_min）：加速模式同样真实时长里推进量约为普通模式的两倍，
+    膀胱局门槛按模式分别判定（见 LONG_GAME_MIN_NORMAL / LONG_GAME_MIN_TURBO）。
     """
     players = match_info.get("players") or []
     teammates = [p for p in players if player_team(p) == team_number]
@@ -352,11 +353,7 @@ def team_context(match_info: dict, team_number, stats: dict) -> dict:
     duration = int(match_info.get("duration") or 0)
 
     turbo = is_turbo(match_info)
-    # 真实时长：补刀 / 分均等「按真实分钟」的指标用它
     dur_min = max(duration // 60, 1)
-    # 等效普通模式时长：等级 / 金钱等「进度」类指标用它
-    eq_duration = duration * TURBO_PROGRESS_MULTIPLIER if turbo else duration
-    eq_dur_min = max(eq_duration // 60, 1)
 
     def _rate(value: int, total: int) -> float:
         return 0.0 if not total else 100.0 * value / total
@@ -366,8 +363,6 @@ def team_context(match_info: dict, team_number, stats: dict) -> dict:
         "turbo": turbo,
         "duration": duration,
         "dur_min": dur_min,
-        "eq_duration": eq_duration,
-        "eq_dur_min": eq_dur_min,
         "peer_total": len(players),
         "team_damage": team_damage,
         "team_kills": team_kills,
@@ -406,7 +401,7 @@ def evaluate_candidates(
     """
     hits: list[tuple[str, int]] = []
     win = ctx["win"]
-    eq_dur_min = ctx["eq_dur_min"]
+    dur_min = ctx["dur_min"]
 
     kills = int(stats.get("kill") or 0)
     deaths = int(stats.get("death") or 0)
@@ -433,11 +428,11 @@ def evaluate_candidates(
     # KDA 是 (K+A)/D 的派生量，与 K / D / A 说的是同一件事，已整体移除。
 
     # ---- 击杀（K）：只留「最多」一档 ----
-    if kills >= 12 and extreme("击杀", 1):
+    if kills >= 20 and extreme("击杀", 1):
         hit("kill_many")
 
     # ---- 阵亡（D）：只留「死得最多」一档 ----
-    if deaths >= 8 and extreme("阵亡", -1):
+    if deaths >= 10 and extreme("阵亡", -1):
         hit("death_many")
 
     # ---- 参团（K+A 占全队击杀比，与 K 的绝对值不是同一信息）----
@@ -459,9 +454,10 @@ def evaluate_candidates(
         hit("lh_high")
 
     # ---- 比赛时长（duration 缺失的简化数据源不参与）----
-    # 用「等效普通模式时长」：加速模式同样的真实时长推进量翻倍。
-    # 只留「长」一档。
-    if ctx["duration"] > 0 and eq_dur_min >= 60:
+    # 按真实分钟判定，加速模式与普通模式门槛不同：加速模式推进快，打到 40 分钟
+    # 已经算拖沓；普通模式要磨满 60 分钟。只留「长」一档。
+    _long_min = LONG_GAME_MIN_TURBO if ctx["turbo"] else LONG_GAME_MIN_NORMAL
+    if ctx["duration"] > 0 and dur_min >= _long_min:
         hit("long_game")
 
     # ---- 英雄梗（每个英雄自己一套词，见 dota_dicts.HERO_MEMES）----

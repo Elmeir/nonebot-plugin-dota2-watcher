@@ -55,6 +55,10 @@ EXCLUDED_BENCHMARKS = {
 # 达到多少连胜/连败才会作为锐评分支参与随机
 STREAK_MIN = 3
 
+# 连胜 / 连败维度：句子里的 {n} 是「跨局」的场数——同一批人一起开黑时大家
+# 的场数往往本来就是同一个，因此允许在这种情况下合并（见 _streak_text）。
+_STREAK_KEYS = ("streak_win", "streak_lose")
+
 # 加速模式（dota_dicts.GAME_MODE[23] = "加速模式"）
 TURBO_MODE = 23
 # 小黑盒兜底数据源不返回 game_mode，只给原始中文模式文本（如"加速模式"）
@@ -518,13 +522,18 @@ def _lines_for(key: str, win: bool, hero_id: int | None = None) -> list[str]:
     return ROAST_LINES.get(f"{key}_win" if win else f"{key}_lose") or ROAST_LINES.get(key) or []
 
 
-def _format_kwargs(stats: dict, ctx: dict, name: str, streak: tuple[int, int]) -> _SafeDict:
+def _format_kwargs(
+    stats: dict, ctx: dict, name: str, streak: tuple[int, int], n_text: str | None = None
+) -> _SafeDict:
     """句子模板可用的占位符集合。
 
     只保留句库里真正在用的占位符：锐评是把结论说出来，不是把数据表念一遍，
     因此 KDA / GPM / 伤害占比 / 参战率这些「字段名 + 数值」的写法已经从句库
     里去掉，对应的占位符也一并删掉（测试会校验两边完全一致，避免留下死占位符，
     也避免模板引用了没提供的占位符而渲染出字面的 `{xxx}`）。
+
+    n_text 用于多人并成一句的连胜 / 连败：一句里只有一个 {n}，得填大家共有的
+    那个场数（见 _streak_text）；缺省时填这个人自己的场数。
     """
     win_streak, lose_streak = streak
     return _SafeDict(
@@ -533,7 +542,7 @@ def _format_kwargs(stats: dict, ctx: dict, name: str, streak: tuple[int, int]) -
         kills=int(stats.get("kill") or 0),
         deaths=int(stats.get("death") or 0),
         dur_min=ctx["dur_min"],
-        n=max(win_streak, lose_streak),
+        n=n_text if n_text is not None else max(win_streak, lose_streak),
     )
 
 
@@ -561,13 +570,26 @@ def _resolve_polarity(candidates: list[tuple[str, int]], positive: bool) -> list
     return filtered or candidates
 
 
+def _fallback_candidates(stats: dict, ctx: dict) -> list[tuple[str, int]]:
+    """兜底组的候选（没命中具体维度时，或命中的维度在本局胜负下没句子时）。
+
+    单独抽出来是为了让 roast_players 能在**归堆之前**就把兜底维度定下来：
+    否则这类玩家归到 None 组各自回退，两个都回退到 lose_good 的人就合并不上，
+    同一句被说两遍（见 roast_players）。
+    """
+    positive = is_positive(stats, ctx["win"], ctx.get("peer"), ctx.get("peer_total", 0))
+    return [(key, _WEIGHTS.get(key, 3)) for key in _fallback_keys(ctx["win"], positive)]
+
+
 def _candidates_for(stats: dict, ctx: dict, streak: tuple[int, int]) -> list[tuple[str, int]]:
     """本局的候选维度及权重（含极性裁决；没命中具体维度时回退到兜底组）。"""
     candidates = evaluate_candidates(stats, ctx, streak)
-    positive = is_positive(stats, ctx["win"], ctx.get("peer"), ctx.get("peer_total", 0))
     if candidates:
+        positive = is_positive(
+            stats, ctx["win"], ctx.get("peer"), ctx.get("peer_total", 0)
+        )
         return _resolve_polarity(candidates, positive)
-    return [(key, _WEIGHTS.get(key, 3)) for key in _fallback_keys(ctx["win"], positive)]
+    return _fallback_candidates(stats, ctx)
 
 
 def _pick_key(candidates: list[tuple[str, int]], win: bool, rng, hero_id=None) -> str | None:
@@ -609,6 +631,7 @@ def _render_one(
     streak: tuple[int, int],
     used: set[str] | None,
     rng,
+    n_text: str | None = None,
 ) -> str | None:
     """渲染指定维度的一句；该维度没句子时返回 None。"""
     lines = _lines_for(key, ctx["win"], _hero_id_of(stats))
@@ -618,7 +641,7 @@ def _render_one(
     line = rng.choice(fresh or lines)
     if used is not None:
         used.add(line)
-    return line.format_map(_format_kwargs(stats, ctx, name, streak))
+    return line.format_map(_format_kwargs(stats, ctx, name, streak, n_text))
 
 
 def _solo_pool(
@@ -645,6 +668,19 @@ def _solo_pool(
     ]
 
 
+def _streak_text(streaks: list[tuple[int, int]]) -> str | None:
+    """多人共用的连胜 / 连败场数文案；场数不一致时返回 None。
+
+    一句里只有一个 {n}，装不下多份数字：3 连胜和 4 连胜并成一句，无论填哪个
+    都是在替另一个人报错。因此只有**大家场数完全相同**时才敢合并，此时填那个
+    共有的场数（「P1、P2 都是 3 连胜」）。场数不同 -> None，各说各的。
+    """
+    nums = {max(win, lose) for win, lose in streaks}
+    if len(nums) != 1:
+        return None
+    return str(next(iter(nums)))
+
+
 def roast_one(
     stats: dict,
     ctx: dict,
@@ -653,12 +689,14 @@ def roast_one(
     used: set[str] | None = None,
     rng=random,
     lock: str | None = None,
+    n_text: str | None = None,
 ) -> str:
     """为一位玩家生成一句锐评。
 
     used 为同一场比赛内已用过的句子集合，用于尽量避免同局多人撞词。
     lock 为归堆阶段定下的维度：给了就锁定它（至多再带上英雄梗），不再重新
     抽签，避免把别的组已经说过的维度又说一遍（见 _solo_pool）。
+    n_text 为多人共用一句时的连胜 / 连败场数文案（见 _streak_text）。
     """
     if lock is None:
         candidates = _candidates_for(stats, ctx, streak)
@@ -666,7 +704,7 @@ def roast_one(
         candidates = _solo_pool(lock, stats, ctx, streak, allow_hero=True)
     key = _pick_key(candidates, ctx["win"], rng, _hero_id_of(stats))
     if key is not None:
-        line = _render_one(key, stats, ctx, name, streak, used, rng)
+        line = _render_one(key, stats, ctx, name, streak, used, rng, n_text)
         if line:
             return line
     # 命中的维度在本局胜负下没有句子（例如 lh_high 只写了 _win 组），
@@ -676,7 +714,7 @@ def roast_one(
     )
     key = _pick_key([(k, _WEIGHTS.get(k, 3)) for k in fallback], ctx["win"], rng)
     if key is not None:
-        line = _render_one(key, stats, ctx, name, streak, used, rng)
+        line = _render_one(key, stats, ctx, name, streak, used, rng, n_text)
         if line:
             return line
     # 兜底组也取不到（句库被删空），用最后保底的一句
@@ -694,12 +732,19 @@ def _join_names(names: list[str]) -> str:
 
 # 合并成一句时句子里不能出现「每个人各自不同的数据」：同一句装不下多份数字，
 # 硬套第一个人的数值等于替别人报错数据。{dur_min} 是全场共享的，不受影响。
-_MERGE_BLOCKERS = ("{kills}", "{deaths}", "{assists}", "{hero}", "{n}")
+# {n}（连胜 / 连败场数）是唯一的例外：同一批人一起开黑时场数本来就是同一个
+# （一起连赢三把），这时一个数是大家共有的，可以并成一句——由 merge_n 放行。
+_MERGE_BLOCKERS = ("{kills}", "{deaths}", "{assists}", "{hero}")
 
 
-def _merge_safe(line: str) -> bool:
-    """这句能不能同时套在多人身上（不含各自的数值 / 英雄 / 连胜场数）。"""
-    return not any(p in line for p in _MERGE_BLOCKERS)
+def _merge_safe(line: str, merge_n: bool = False) -> bool:
+    """这句能不能同时套在多人身上（不含各自的数值 / 英雄 / 连胜场数）。
+
+    merge_n 为真表示这几个人的连胜 / 连败场数完全相同（见 _streak_text），
+    {n} 就成了大家共有的一份数字，可以合并；否则 {n} 与各自的数值一样不可合并。
+    """
+    blockers = _MERGE_BLOCKERS if merge_n else (*_MERGE_BLOCKERS, "{n}")
+    return not any(p in line for p in blockers)
 
 
 def roast_players(
@@ -712,8 +757,10 @@ def roast_players(
 
     同一条消息里若有多人抽中同一个维度，合并成一句一起说（「P1、P3 和 P5 野区
     都快被你们躺成坟场了」），而不是每人来一句相似的——同样的句式连着刷三遍
-    读起来很啰嗦。合并只在句子不含各自的数值 / 英雄 / 连胜场数时进行：一句
-    装不下多份数字，硬套第一个人的数值等于替别人报错数据。
+    读起来很啰嗦。合并只在句子不含各自的数值 / 英雄时进行：一句装不下多份数字，
+    硬套第一个人的数值等于替别人报错数据。连胜 / 连败是唯一的例外：它的 {n}
+    是跨局的场数，同一批人一起开黑时场数本来就是同一个（一起连赢三把），此时
+    并成一句；场数不同则各说各的（见 _streak_text）。
 
     多人共享同一个数据维度时，优先让这个维度合并成一句，不再给其中某人随机
     换成英雄梗——英雄梗含 {hero}，本来就合并不起来，随机塞进去会把该合的
@@ -728,8 +775,10 @@ def roast_players(
 
     # 先按「数据维度」给每人定位，再归堆——合并必须在选句之前做。
     # 英雄梗不参与这一步：它含 {hero}，永远合并不起来，会让该合的合不上。
-    # key 可能为 None（命中的维度在本局胜负下没句子，例如 lh_high 只写了
-    # _win 组而本局是输局）：这类玩家不能丢，归到 None 组由 roast_one 兜底。
+    # 归堆阶段就把兜底维度也定下来：命中的维度在本局胜负下没句子时（例如
+    # lh_high 只写了 _win 组而本局是输局），_pick_key 会返回 None。若让这些人
+    # 归到 None 组各自回退，两个都回退到 lose_good 的人就合并不上——同一句
+    # 被说两遍。因此这里立刻换到兜底组再抽一次 key，让兜底组也参与归堆合并。
     picks: list[tuple[str | None, dict, dict, tuple[int, int], str, int | None]] = []
     for player in player_list:
         stats = player.stats
@@ -739,6 +788,9 @@ def roast_players(
         hero_id = _hero_id_of(stats)
         dims, _hero = _split_hero(_candidates_for(stats, ctx, streak))
         key = _pick_key(dims, ctx["win"], rng, hero_id)
+        if key is None:
+            # 命中的维度在本局胜负下没有句子 -> 兜底组（win_*/lose_* 之一）
+            key = _pick_key(_fallback_candidates(stats, ctx), ctx["win"], rng, hero_id)
         picks.append((key, stats, ctx, streak, player.nickname, hero_id))
 
     groups: dict[str | None, list] = {}
@@ -753,32 +805,60 @@ def roast_players(
     for key in order:
         members = groups[key]
         if key is None:
-            # 没有可用的数据维度：逐人走 roast_one（内含兜底组回退）
+            # 兜底组也没句子（句库被删空）：逐人走 roast_one 走最后保底
             for _, m_stats, m_ctx, m_streak, m_name, _m_hero in members:
                 lines.append(roast_one(m_stats, m_ctx, m_name, m_streak, used, rng))
             continue
-        _, m0_stats, m0_ctx, m0_streak, _, m0_hero = members[0]
-        if len(members) > 1:
-            # 只取能同时套在所有人身上的句子；没有就还是各说各的
-            pool = [ln for ln in _lines_for(key, m0_ctx["win"], m0_hero) if _merge_safe(ln)]
-            if pool:
-                fresh = [ln for ln in pool if ln not in used]
-                line = rng.choice(fresh or pool)
-                used.add(line)
-                # 多人并成一句后，「你」要跟着变成「你们」，否则主谓对不上
-                if "你们" not in line:
-                    line = line.replace("你", "你们")
-                lines.append(
-                    line.format_map(
-                        _format_kwargs(
-                            m0_stats, m0_ctx, _join_names([m[4] for m in members]), m0_streak
+        # 连胜 / 连败按「场数相同」再分一次组：一句里只有一个 {n}，只能装下
+        # 大家共有的那个场数。3/3/7 连胜 -> 「P1、P2 已经 3 连胜」+「P3 7 连胜」，
+        # 而不是全拆成三行，也不是用 3 替 P3 报错。
+        if len(members) > 1 and key in _STREAK_KEYS:
+            by_n: dict[int, list] = {}
+            for m in members:
+                by_n.setdefault(max(m[3][0], m[3][1]), []).append(m)
+            subgroups = list(by_n.values())
+        else:
+            subgroups = [members]
+
+        for sub in subgroups:
+            _, m0_stats, m0_ctx, m0_streak, _, m0_hero = sub[0]
+            merged = False
+            if len(sub) > 1:
+                # 连胜 / 连败每句都含 {n}，但这一组里大家的场数本来就是同一个
+                # （一起开黑、一起连赢三把），{n} 是共有的，可以并成一句
+                # ——「P1、P2 和 P3 已经 3 连胜」。
+                n_text = _streak_text([m[3] for m in sub]) if key in _STREAK_KEYS else None
+                n_ok = n_text is not None
+                # 只取能同时套在所有人身上的句子；没有就还是各说各的
+                pool = [
+                    ln
+                    for ln in _lines_for(key, m0_ctx["win"], m0_hero)
+                    if _merge_safe(ln, n_ok)
+                ]
+                if pool:
+                    fresh = [ln for ln in pool if ln not in used]
+                    line = rng.choice(fresh or pool)
+                    used.add(line)
+                    # 多人并成一句后，「你」要跟着变成「你们」，否则主谓对不上
+                    if "你们" not in line:
+                        line = line.replace("你", "你们")
+                    lines.append(
+                        line.format_map(
+                            _format_kwargs(
+                                m0_stats,
+                                m0_ctx,
+                                _join_names([m[4] for m in sub]),
+                                m0_streak,
+                                n_text,
+                            )
                         )
                     )
-                )
+                    merged = True
+            if merged:
                 continue
-        for _, m_stats, m_ctx, m_streak, m_name, m_hero in members:
-            # 多人共享这个维度但句子都不可合并（例如 streak_* 每句都含 {n}）：
-            # 各说各的，但维度仍然锁死在这个 key 上，不许重抽到别人说过的维度。
-            line = roast_one(m_stats, m_ctx, m_name, m_streak, used, rng, lock=key)
-            lines.append(line)
+            for _, m_stats, m_ctx, m_streak, m_name, m_hero in sub:
+                # 多人共享这个维度但句子不可合并（例如各自的数值 / 英雄）：
+                # 各说各的，但维度仍然锁死在这个 key 上，不许重抽到别人说过的维度。
+                line = roast_one(m_stats, m_ctx, m_name, m_streak, used, rng, lock=key)
+                lines.append(line)
     return "\n".join(lines)

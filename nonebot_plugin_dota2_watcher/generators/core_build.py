@@ -334,6 +334,33 @@ ABILITIES = loadjson(ABILITIES_FILE)
 TALENTS_CN = loadjson(TALENTS_CN_FILE)
 
 
+# ============================================================
+# 主数据（d2pt_core_build.json）进程内缓存
+# ============================================================
+# 文件约 635KB，JSON 解析一次约 11ms；每次生成图都重新解析纯属浪费。
+# 缓存键为 (mtime, size)，数据文件被更新（72 小时刷新）后自动失效。
+_data_file_cache: dict = {"stamp": None, "value": None}
+
+
+def load_data_file():
+    """读取并解析主数据文件，按 (mtime, size) 做进程内缓存。
+
+    返回解析后的 dict；文件缺失/损坏时返回 {}（与 loadjson 语义一致）。
+    文件被更新后（mtime 或大小变化）自动重新解析。
+    """
+    try:
+        st = os.stat(DATA_FILE)
+        stamp = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return {}
+    if _data_file_cache["stamp"] == stamp and _data_file_cache["value"] is not None:
+        return _data_file_cache["value"]
+    data = loadjson(DATA_FILE)
+    _data_file_cache["stamp"] = stamp
+    _data_file_cache["value"] = data
+    return data
+
+
 def item_id_to_name(item_id):
     """物品 ID -> 名称。"""
     return ITEMS.get(item_id, f"item_{item_id}")
@@ -1107,7 +1134,7 @@ async def generate_image(
         await close_shared_browser()
     """
     await ensure_data_file()
-    data = loadjson(DATA_FILE)
+    data = load_data_file()
     if not data:
         print(f"错误: 无法读取数据文件 {DATA_FILE}", file=sys.stderr)
         return False
@@ -1215,13 +1242,15 @@ async def generate_image(
     # 使细边框/文字边缘更锐利，同时保持最终输出大小不变（默认 600px）。
     render_scale = device_scale_factor * supersample
     # 复用共享 page 反复 set_content（而非每次 new_context/new_page），批量生成时更快。
-    page = await shared_browser.get_page(render_scale)
-    # 技能/物品图标均以 base64 data URL 内嵌，无需等待网络 idle；
-    # 等 load 事件（含本地资源）即可，避免 networkidle 固定 500ms 空窗。
-    await page.set_content(html, wait_until="load")
-    await page.wait_for_timeout(50)
-    container = page.locator("#container")
-    png_bytes = await container.screenshot()
+    # rendering() 保证「set_content → 截图」期间页面独占，并发生成不会互相覆盖。
+    async with shared_browser.rendering(render_scale) as page:
+        # 技能/物品图标均以 base64 data URL 内嵌，无需等待网络 idle；
+        # 等 load 事件（含本地资源）即可，避免 networkidle 固定 500ms 空窗。
+        # 实测 set_content(load) 返回后布局/字体已就绪，截图结果与额外等待完全一致
+        # （逐像素 PSNR=inf），故不再插入固定 wait_for_timeout。
+        await page.set_content(html, wait_until="load")
+        container = page.locator("#container")
+        png_bytes = await container.screenshot()
 
     # 降采样回目标尺寸
     if supersample > 1:

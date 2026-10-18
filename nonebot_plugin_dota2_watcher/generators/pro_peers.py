@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import os
 import time
@@ -189,7 +190,11 @@ async def generate_image(steam_id, theme: str | None = None, refresh: bool = Fal
     await ds.apply_pro_avatars(stats)
 
     top = stats[: ds.OUTPUT_LIMIT]
-    avatar_uris = [await _avatar_data_uri(r.get("avatar") or "") for r in top]
+    # 头像并发下载：冷缓存时串行 await 会是 N × RTT（10 行可达 1 秒以上），
+    # 并发后只需 1 个 RTT。gather 保序，avatar_uris 与 top 一一对应。
+    avatar_uris = list(
+        await asyncio.gather(*(_avatar_data_uri(r.get("avatar") or "") for r in top))
+    )
     player_avatar_uri = await _avatar_data_uri(player_avatar)
 
     theme_dict = THEMES.get(theme, THEME_LIGHT)
@@ -208,10 +213,11 @@ async def generate_image(steam_id, theme: str | None = None, refresh: bool = Fal
         return out_path
 
     supersample = 2
-    page = await shared_browser.get_page(supersample)
-    await page.set_content(html, wait_until="load")
-    await page.wait_for_timeout(50)
-    png_bytes = await page.locator("#container").screenshot()
+    # rendering() 保证「set_content → 截图」期间页面独占；load 事件返回后
+    # 布局与字体已就绪，无需再插入固定等待（逐像素验证完全一致）。
+    async with shared_browser.rendering(supersample) as page:
+        await page.set_content(html, wait_until="load")
+        png_bytes = await page.locator("#container").screenshot()
 
     from PIL import Image
 

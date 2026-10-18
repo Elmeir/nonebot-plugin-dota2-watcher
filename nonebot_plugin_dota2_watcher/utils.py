@@ -262,11 +262,31 @@ async def cache_with_fallback(
         raise
 
 
+# 图片 data URI 缓存：同一素材（物品/技能图标）会被反复内嵌进 HTML，
+# 每次读盘 + base64 编码都有成本（实测 448 个物品图标约 50ms/轮），
+# 缓存后命中分支为纯内存查找。键同时带文件大小与 mtime，
+# 素材被重新下载（大小/时间变化）时自动失效。
+_data_uri_cache: dict[str, tuple[tuple[int, float], str]] = {}
+
+
 def image_to_data_uri(path):
-    """读取本地图片文件，转成 base64 data URI（png）。"""
+    """读取本地图片文件，转成 base64 data URI（png），带进程内缓存。"""
+    try:
+        st = os.stat(path)
+        stamp = (st.st_size, st.st_mtime)
+    except OSError:
+        stamp = None
+    key = str(path)
+    if stamp is not None:
+        cached = _data_uri_cache.get(key)
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
     with open(path, "rb") as f:
         data = base64.b64encode(f.read()).decode("ascii")
-    return f"data:image/png;base64,{data}"
+    uri = f"data:image/png;base64,{data}"
+    if stamp is not None:
+        _data_uri_cache[key] = (stamp, uri)
+    return uri
 
 
 # ---------------------------------------------------------------

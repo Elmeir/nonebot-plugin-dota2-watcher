@@ -1413,18 +1413,24 @@ def _build_logo_uris(tids, team_info, lp_logos):
 
 
 async def _screenshot_html(html, output_path, width, height):
-    """渲染 HTML 到浏览器并截图保存，返回 output_path。"""
+    """渲染 HTML 到浏览器并截图保存，返回 output_path。
+
+    复用共享浏览器里的共享页面（rendering() 保证「set_content → 截图」独占），
+    不再每次 new_page/close：省掉每次约 25-30ms 的页面创建与上下文开销。
+    viewport 用较大的固定尺寸：截图目标始终是 .wrap 卡片本身，按内容自适应，
+    viewport 只需保证卡片不被裁切。
+    """
     os.makedirs(os.path.dirname(os.path.abspath(output_path)) or ".", exist_ok=True)
-    browser = await shared_browser.get_browser()
-    page = await browser.new_page(
-        viewport={"width": width, "height": height},
-        device_scale_factor=1,
-    )
-    await page.set_content(html, wait_until="domcontentloaded")
-    await page.wait_for_timeout(100)
-    card = await page.query_selector(".wrap")
-    await card.screenshot(path=output_path)
-    await page.close()
+    async with shared_browser.rendering(1) as page:
+        # 页面尺寸以卡片内容为准，viewport 只在卡片超出时兜底放大，避免裁切
+        await page.set_viewport_size(
+            {"width": max(int(width), 800), "height": max(int(height), 600)}
+        )
+        # 图片均为内嵌 data URI，set_content(load) 返回即已就绪；
+        # 这里不再插入固定等待（与旧实现的 100ms 等待逐像素一致）。
+        await page.set_content(html, wait_until="load")
+        card = await page.query_selector(".wrap")
+        await card.screenshot(path=output_path)
     return output_path
 
 

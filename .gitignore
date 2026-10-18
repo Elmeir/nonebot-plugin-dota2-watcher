@@ -12,11 +12,18 @@ venv/
 # 环境变量（含密钥，勿提交）
 .env
 
+# 运行期配置（插件首次运行会在数据目录生成 config.json，内含 Steam / Stratz 密钥）
+config.json
+config.json.bak
+
 # 运行期产物
 matches/
 output/
 data/
 images/
+
+# 性能基准的临时运行期目录与产物
+bench/
 
 # 测试脚本（仅提交内容，不提交脚本本身）
 tests/

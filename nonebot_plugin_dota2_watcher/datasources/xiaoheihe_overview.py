@@ -45,8 +45,11 @@ CONTENT_MODULES = {
     "career_record": "career_record",
 }
 
-# 接口对「查无此人 / 未产生战绩」的玩家会额外下发 notify 模块自带说明，
-# 出现它就等价于「没有可展示的战绩」，无需再逐模块判断。
+# 接口下发的说明模块。注意它表示「部分数据缺失」而非「没有战绩」：
+# 实测 138081831 / iNSaNiA 等玩家战绩完整（20 场近战、5 场比赛、5 个英雄、
+# 12 项纪录），但因为 Steam 资料未完全公开仍会带这条提示；反过来，
+# 完全不存在的 steam_id（如 999999999999）反而不下发 notify。
+# 因此 notify 只能用于「附带说明」，绝不能作为「无战绩」的判定依据。
 NOTICE_MODULE = "notify"
 
 # 视为「没有数值」的取值：接口用 0 / 0.0 / 0.0% 表示该统计项无数据
@@ -150,13 +153,15 @@ def modules(data: dict) -> dict[str, dict]:
 def has_any_content(data: dict) -> bool:
     """是否包含任何可展示的战绩内容（任一战绩模块里存在非零的真实条目）。
 
-    接口对不存在的玩家不会报错，而是返回 200 + 空壳：header 里是占位昵称、
-    career_record / r20_data_stats 全是 0，可能还带一个 notify 说明模块。
-    因此不能用「有没有 header / 模块」判断，必须看各模块的实际条目。
+    接口对不存在的玩家不会报错，而是返回 200 + 空壳：header 里是占位昵称，
+    recent_match / match_list / common_hero 为空，career_record / r20_data_stats
+    全是 0。因此不能用「有没有 header / 模块」判断，必须看各模块的实际条目。
+
+    特别注意：notify 模块**不能**作为「无战绩」的判据——它表示「部分数据缺失」，
+    有完整战绩的玩家（如 138081831）同样会带这条提示，而完全不存在的 steam_id
+    反而不下发它。是否无战绩只能由各模块的实际条目决定。
     """
     index = modules(data)
-    if NOTICE_MODULE in index:
-        return False
     return any(
         _has_meaningful((index.get(item_type) or {}).get(list_key))
         for item_type, list_key in CONTENT_MODULES.items()
@@ -164,7 +169,10 @@ def has_any_content(data: dict) -> bool:
 
 
 def notice_message(data: dict) -> str:
-    """取接口下发的说明文案（如「该玩家未产生战绩」），没有则返回空串。"""
+    """取接口下发的说明文案（如「该玩家未公开战绩，数据可能有所缺失」），无则空串。
+
+    该文案是「数据缺失」的提醒，不代表没有战绩；仅在确实无内容时才作为提示语。
+    """
     notice = modules(data).get(NOTICE_MODULE) or {}
     return str(notice.get("msg") or "").strip()
 

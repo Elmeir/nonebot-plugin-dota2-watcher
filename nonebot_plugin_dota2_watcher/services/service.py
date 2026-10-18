@@ -23,9 +23,11 @@ from ..datasources.request_match import (
     request_match_info_opendota,
     request_news,
 )
+from ..datasources.xiaoheihe_overview import OverviewError
 from ..generators import core_build, hero_pool, match_builder
 from ..generators import playmates as playmates_gen
 from ..generators import pro_peers as pro_peers_gen
+from ..generators import xiaoheihe_overview as xiaoheihe_gen
 from ..utils import load_cache, player_team, run_single_flight
 from . import store
 from .player import Player
@@ -212,6 +214,26 @@ _HERO_POOL_SIZES = {
 }
 
 
+def _resolve_steam_id(group_id, arg: str) -> int:
+    """把「steam_id 或本群订阅玩家昵称」解析成 steam_id。
+
+    优先按昵称匹配，因为昵称可能是数字，会与 steam_id 混淆；
+    都不是时抛 ValueError（提示文案）。
+    """
+    arg = (arg or "").strip()
+    player = next(
+        (p for p in store.get_group(str(group_id)) if p.nickname == arg),
+        None,
+    )
+    if player is not None:
+        return int(player.short_steamID)
+    if arg.isdigit():
+        return int(arg)
+    raise ValueError(
+        f"未找到昵称为「{arg}」的订阅玩家，请先用 /添加刀塔玩家 订阅，或直接输入 steam_id"
+    )
+
+
 async def hero_pool_image(group_id, arg: str, size: str = "", theme: str | None = None) -> str:
     """生成玩家英雄池环形图，返回本地图片路径。
 
@@ -220,20 +242,7 @@ async def hero_pool_image(group_id, arg: str, size: str = "", theme: str | None 
     theme 留空时使用配置项 d2w_image_theme（默认 light）。
     参数解析失败 / 未配置 Token 时抛出 ValueError（提示文案），生成失败返回空串。
     """
-    arg = arg.strip()
-    # 优先按昵称匹配，因为昵称可能是数字，会与 steam_id 混淆
-    player = next(
-        (p for p in store.get_group(str(group_id)) if p.nickname == arg),
-        None,
-    )
-    if player is not None:
-        steam_id = player.short_steamID
-    elif arg.isdigit():
-        steam_id = int(arg)
-    else:
-        raise ValueError(
-            f"未找到昵称为「{arg}」的订阅玩家，请先用 /添加刀塔玩家 订阅，或直接输入 steam_id"
-        )
+    steam_id = _resolve_steam_id(group_id, arg)
     count = _HERO_POOL_SIZES.get(size.strip().lower(), 25)
     theme = normalize_image_theme(theme)
 
@@ -258,21 +267,8 @@ async def pro_image(group_id, arg: str, theme: str | None = None) -> str:
     参数解析失败 / 未配置 Token 时抛出 ValueError（提示文案），生成失败返回空串。
     相同账号 + 相同风格的并发查询通过 single-flight 共享同一次执行（不重复抓取）。
     """
-    arg = arg.strip()
     theme = normalize_image_theme(theme)
-    # 优先按昵称匹配，因为昵称可能是数字，会与 steam_id 混淆
-    player = next(
-        (p for p in store.get_group(str(group_id)) if p.nickname == arg),
-        None,
-    )
-    if player is not None:
-        steam_id = player.short_steamID
-    elif arg.isdigit():
-        steam_id = int(arg)
-    else:
-        raise ValueError(
-            f"未找到昵称为「{arg}」的订阅玩家，请先用 /添加刀塔玩家 订阅，或直接输入 steam_id"
-        )
+    steam_id = _resolve_steam_id(group_id, arg)
 
     async def _build() -> str:
         try:
@@ -294,21 +290,8 @@ async def playmates_image(group_id, arg: str, theme: str | None = None) -> str:
     参数解析失败 / 未配置 Token 时抛出 ValueError（提示文案），生成失败返回空串。
     相同账号的并发查询通过 single-flight 共享同一次执行（不重复抓取）。
     """
-    arg = arg.strip()
     theme = normalize_image_theme(theme)
-    # 优先按昵称匹配，因为昵称可能是数字，会与 steam_id 混淆
-    player = next(
-        (p for p in store.get_group(str(group_id)) if p.nickname == arg),
-        None,
-    )
-    if player is not None:
-        steam_id = player.short_steamID
-    elif arg.isdigit():
-        steam_id = int(arg)
-    else:
-        raise ValueError(
-            f"未找到昵称为「{arg}」的订阅玩家，请先用 /添加刀塔玩家 订阅，或直接输入 steam_id"
-        )
+    steam_id = _resolve_steam_id(group_id, arg)
 
     async def _build() -> str:
         try:
@@ -320,6 +303,30 @@ async def playmates_image(group_id, arg: str, theme: str | None = None) -> str:
             return ""
 
     return await run_single_flight(("playmates", steam_id, theme), _build)
+
+
+async def xiaoheihe_overview_image(group_id, arg: str, theme: str | None = None) -> str:
+    """生成小黑盒「最近战绩」图片（玩家卡 / 近20场 / 比赛列表 / 常用英雄 / 生涯纪录）。
+
+    arg 可为 steam_id（纯数字）或本群已订阅玩家昵称；
+    theme 留空时使用配置项 d2w_image_theme（默认 light）。
+    数据与生成图均按 d2w_xiaoheihe_cache_seconds（默认 1 小时）缓存。
+    参数解析失败 / 查不到玩家时抛出 ValueError（提示文案），生成失败返回空串。
+    相同账号 + 相同风格的并发查询通过 single-flight 共享同一次执行。
+    """
+    theme = normalize_image_theme(theme)
+    steam_id = _resolve_steam_id(group_id, arg)
+
+    async def _build() -> str:
+        try:
+            return await xiaoheihe_gen.generate_image(steam_id, theme=theme) or ""
+        except OverviewError as e:
+            raise ValueError(str(e))
+        except Exception:
+            logger.exception("小黑盒战绩图生成失败")
+            return ""
+
+    return await run_single_flight(("xiaoheihe_overview", steam_id, theme), _build)
 
 
 # ---------------------------------------------------------------

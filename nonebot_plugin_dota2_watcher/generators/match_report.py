@@ -18,13 +18,15 @@ from PIL import Image, ImageDraw, ImageFont
 # 目录配置
 # ============================================================
 # 兼容两种运行方式：作为插件包被导入，或作为独立脚本直接运行。
-# 所有目录 / URL / 超时等配置统一从 config.py 读取。
+# 所有目录 / URL / 超时等配置统一从 config.py 读取，图片素材目录见 assets.py。
 if __package__:
+    from .. import assets
     from .. import config as _cfg
     from ..datasources.xiaoheihe import fetch_xiaoheihe_match
     from ..dota_dicts import GAME_MODE, LOBBY, REGION
     from ..utils import async_download_bytes, dumpjson, get_http_client, loadjson
 else:
+    import assets
     import config as _cfg
     from dota_dicts import GAME_MODE, LOBBY, REGION
     from utils import async_download_bytes, dumpjson, get_http_client, loadjson
@@ -40,9 +42,7 @@ OUTPUT_DIR = str(_cfg.OUTPUT_DIR)
 for d in [WORK_DIR, IMAGES_DIR, MATCHES_DIR, OUTPUT_DIR]:
     os.makedirs(d, exist_ok=True)
 
-# 图片按类别归档的子目录（hero / item）
-for _d in ["hero", "item"]:
-    os.makedirs(os.path.join(IMAGES_DIR, _d), exist_ok=True)
+# 图片素材子目录（hero / item / other ...）由 assets 统一创建，这里不再重复维护。
 
 
 # ============================================================
@@ -313,31 +313,8 @@ def draw_text_stroke(draw, pos, text, font, fill, stroke_fill, stroke_width=1):
 # ============================================================
 # 职业选手认证徽章（OpenDota iconConfirmed 图标，金色圆 + 白色对勾）
 # ============================================================
-PRO_BADGE_URL = f"{_cfg.D2PT_REPO_BASE}/images/pro_badge.png"
-
-
-async def _ensure_pro_badge() -> bool:
-    """确保职业认证徽章 PNG 存在，只需下载一次。
-
-    查找顺序：运行缓存（images/other/pro_badge.png）→ 上游仓库网络下载
-    （d2pt_bot 仓库 images/pro_badge.png，经 gh-proxy 加速）。
-    全部失败时返回 False，战报降级为无徽章。
-    """
-    badge_path = image_path("pro_badge.png")
-    if os.path.exists(badge_path) and os.path.getsize(badge_path) > 100:
-        return True
-    try:
-        data = await async_download_bytes(PRO_BADGE_URL, timeout=_cfg.config.d2w_download_timeout)
-        if not data or len(data) <= 100:
-            logger.warning(f"职业认证徽章下载内容异常: {len(data or b'')} bytes")
-            return False
-        with open(badge_path, "wb") as f:
-            f.write(data)
-        logger.info(f"职业认证徽章已下载: {badge_path}")
-        return True
-    except Exception as e:
-        logger.warning(f"职业认证徽章下载失败（战报降级为无徽章）: {e}")
-    return False
+# 素材路径与下载逻辑统一在 assets 中（/战绩 也用同一张），这里只保留调用入口。
+# 用法：await assets.ensure_pro_badge() 预取，assets.pro_badge_image() 取图。
 
 
 # ============================================================
@@ -651,20 +628,6 @@ async def init_fonts():
 
 
 # ============================================================
-# 图片路径：按类别归档（hero_* → hero/，item_* → item/，其余 → 根目录）
-# ============================================================
-def image_path(img_name):
-    """返回图片在本地的完整路径，按文件名前缀自动归入对应子目录。"""
-    if img_name.startswith("hero_"):
-        subdir = "hero"
-    elif img_name.startswith("item_"):
-        subdir = "item"
-    else:
-        subdir = ""
-    return os.path.join(IMAGES_DIR, subdir, img_name)
-
-
-# ============================================================
 # 初始化：图片（异步并发下载）
 # ============================================================
 async def init_images():
@@ -737,11 +700,12 @@ async def init_images():
 # ============================================================
 # 获取图片
 # ============================================================
-# 内存缓存：图片素材（英雄/物品/段位/logo）在一次渲染里会被反复取用，跨渲染也高度重复。
-# 素材总量约 27MB（127 英雄 + 448 物品的 RGBA），进程内常驻可接受；
-# 缓存已 load 完成的副本，既省掉每次解码，也避免调用方对返回图就地修改时互相污染。
-_IMAGE_CACHE = {}
-_IMAGE_CACHE_MAX = 2048  # 素材总量上限（超出后整体清空，避免异常数据把内存撑爆）
+# ============================================================
+# 获取图片（目录与缓存统一由 assets 管理，这里仅保留战报专用包装）
+# ============================================================
+def image_path(img_name):
+    """返回图片在本地的完整路径（按文件名前缀自动归入类别子目录，见 assets）。"""
+    return assets.image_path(img_name)
 
 
 def get_image(img_name):
@@ -750,39 +714,15 @@ def get_image(img_name):
     实测：一次战报渲染要取 ~85 张图，每次重新 Image.open + load 约 30ms，
     命中缓存后趋近 0；同时避免每次渲染都重复解码 PNG。
     """
-    img = _IMAGE_CACHE.get(img_name)
-    if img is not None:
-        return img.copy()
-    try:
-        img = Image.open(image_path(img_name))
-        img.load()
-        img = img.copy()
-    except Exception as e:
-        logger.warning(f"读取图片失败 {img_name}: {e}")
-        return Image.new("RGBA", (30, 30), (255, 160, 160))
-    if len(_IMAGE_CACHE) >= _IMAGE_CACHE_MAX:
-        _IMAGE_CACHE.clear()
-    _IMAGE_CACHE[img_name] = img
-    return img.copy()
+    return assets.get_image(img_name)
 
 
 # 缩放结果缓存：(名称, 尺寸) -> 已按 LANCZOS 缩放到目标尺寸的图。
 # 战报里每位玩家都要取同一批素材缩到同样尺寸（英雄/段位/物品各 10 次），
 # 缓存后把约 15ms 的重复 resize 压到近 0；尺寸组合有限，不会无限增长。
-_SCALED_CACHE = {}
-_SCALED_CACHE_MAX = 4096
-
-
 def get_scaled_image(img_name, size, resample=None):
     """取图片并按 size 缩放，结果按 (名称, 尺寸) 缓存（返回副本，调用方可安全修改）。"""
-    key = (img_name, tuple(size))
-    cached = _SCALED_CACHE.get(key)
-    if cached is None:
-        cached = get_image(img_name).resize(size, resample or _RESAMPLE_LANCZOS)
-        if len(_SCALED_CACHE) >= _SCALED_CACHE_MAX:
-            _SCALED_CACHE.clear()
-        _SCALED_CACHE[key] = cached
-    return cached.copy()
+    return assets.get_scaled_image(img_name, size, resample)
 
 
 # 段位徽章合成缓存：(段位, 星数, 目标边长) -> 已合成到白底并缩放的 RGB 图。
@@ -1205,7 +1145,7 @@ async def generate_match_image(
         return False
 
     await init_images()
-    await _ensure_pro_badge()
+    await assets.ensure_pro_badge()
 
     # 同步的 PIL 绘制 + 保存是 CPU/IO 密集操作，放到线程执行，避免阻塞事件循环。
     return await asyncio.to_thread(
@@ -1214,14 +1154,8 @@ async def generate_match_image(
 
 
 def _render_match_image(match, font_paths, scale, output_path, match_id, t0):
-    # 职业认证徽章（透明 PNG，_ensure_pro_badge 预生成；缺失时降级为无徽章）
-    badge_img = None
-    badge_file = image_path("pro_badge.png")
-    if os.path.exists(badge_file):
-        try:
-            badge_img = Image.open(badge_file).convert("RGBA")
-        except Exception:
-            badge_img = None
+    # 职业认证徽章（透明 PNG，assets.ensure_pro_badge 预生成；缺失时降级为无徽章）
+    badge_img = assets.pro_badge_image()
 
     def _s(v):
         return int(v * scale)

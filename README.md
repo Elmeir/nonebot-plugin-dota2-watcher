@@ -10,6 +10,7 @@
 - **TI 赛事**：定时拉取 TI 赛果并推送，支持 `/ti` 查看实时战报图片。
 - **D2PT 出装**：查询 D2PT 各位置胜率 / 线优数据，以及指定英雄的核心出装图片（支持明暗主题）。
 - **英雄池**：通过 Stratz 数据生成玩家最近比赛的英雄池环形图（含出场占比与位置占比内环）。
+- **最近战绩**：通过小黑盒公开接口生成玩家战绩图（玩家卡 / 近20场胜负条 / 比赛列表 / 常用英雄 / 生涯纪录），数据与图片各缓存 1 小时。
 - **播报开关**：按群 / 按玩家开启或关闭播报（昵称填「全体」可一次控制全部）。
 - **战队名单订阅**：订阅战队后，其登记名单出现成员加入 / 离开时自动播报（数据来自 Valve 官方接口）。
 - **群组过滤**：支持白名单 / 黑名单模式，控制插件仅在指定群内生效（指令与播报均受限）。
@@ -76,7 +77,7 @@ nonebot.run()
 | `D2W_GAME_MODE`                | 不播报的游戏模式列表                                                                   | `[15, 19]` |
 | `D2W_BENCHMARK_THRESHOLD`      | 锐评正负倾向判定阈值（0\~1，小黑盒综合分 / OpenDota benchmark 可用时生效）              | `0.5`      |
 | **图片风格**                     |                                                                              |            |
-| `D2W_IMAGE_THEME`              | 图片生成风格统一默认值：`light`（亮色）/ `dark`（暗色）；作用于 `/出装`、`/开黑`、`/英雄池`，命令上的 `dark\|light` 参数可临时覆盖 | `light`    |
+| `D2W_IMAGE_THEME`              | 图片生成风格统一默认值：`light`（亮色）/ `dark`（暗色）；作用于 `/出装`、`/开黑`、`/英雄池`、`/战绩`，命令上的 `dark\|light` 参数可临时覆盖 | `light`    |
 | **定时任务**                     |                                                                              |            |
 | `D2W_TI_ENABLED`               | TI 赛事定时任务总开关；设为 `false` 时完全不注册、不轮询，零性能开销（彻底关闭）                            | `false`    |
 | `D2W_NEWS_ENABLED`             | 官方新闻定时任务总开关；设为 `false` 时完全不注册、不轮询，零性能开销（彻底关闭）                            | `true`     |
@@ -90,6 +91,7 @@ nonebot.run()
 | `D2W_CACHE_EXPIRE_SECONDS`     | D2PT / 玩家数据缓存时长（秒）                                                           | `10800`    |
 | `D2W_CORE_BUILD_CACHE_SECONDS` | 核心出装数据缓存时长（秒）                                                                | `259200`   |
 | `D2W_CORE_BUILD_IMAGE_CACHE_SECONDS` | 核心出装生成图片缓存时长（秒）                                                   | `86400`    |
+| `D2W_XIAOHEIHE_CACHE_SECONDS`  | `/战绩` 数据与生成图片的缓存时长（秒）；战绩时效性强，默认 1 小时                            | `3600`     |
 
 > 运行期数据与缓存目录由 [nonebot-plugin-localstore](https://github.com/nonebot/plugin-localstore) 统一管理，默认写入系统用户数据目录；如需自定义，可设置 `LOCALSTORE_DATA_DIR` / `LOCALSTORE_CACHE_DIR`。
 
@@ -103,7 +105,7 @@ D2W_TIMEOUT=20
 D2W_TI_ENABLED=false      # 可选：TI 赛事定时任务总开关（默认已关闭），设 true 开启
 D2W_NEWS_ENABLED=true     # 可选：官方新闻定时任务总开关，设 false 彻底关闭以省性能
 D2W_GROUP_MODE=all        # 可选：群组生效模式 all / whitelist / blacklist，配合下面的白/黑名单列表使用
-D2W_IMAGE_THEME=light     # 可选：图片生成风格统一默认值 light / dark（/出装、/开黑、/英雄池）
+D2W_IMAGE_THEME=light     # 可选：图片生成风格统一默认值 light / dark（/出装、/开黑、/英雄池、/战绩）
 LOCALSTORE_DATA_DIR=./data     # 可选：数据目录（订阅信息、持久缓存）
 LOCALSTORE_CACHE_DIR=./cache   # 可选：图片/战报等可再生缓存目录
 ```
@@ -130,13 +132,14 @@ LOCALSTORE_CACHE_DIR=./cache   # 可选：图片/战报等可再生缓存目录
 | `/战队 [队名或 team_id 或 CN]`   | 查询战队当前登记名单（显示职业名；`CN` 返回全部中国战队，每队一行）    | 任意  |
 | `/pro [steam_id 或 玩家昵称] [dark\|light]` | 生成与职业选手的队友/对手对战记录图（Stratz + OpenDota 互补，Liquipedia 校验，展示前 10 条） | 任意  |
 | `/开黑 [steam_id 或 玩家昵称] [dark\|light]` | 生成最常一起开黑的队友记录图（Stratz 同队聚合，按共同场次降序取前 20，含场次与胜率） | 任意  |
+| `/战绩 [steam_id 或 玩家昵称] [dark\|light]` | 生成小黑盒最近战绩图（玩家卡 / 近20场胜负条 / 比赛列表 / 常用英雄 / 生涯纪录），数据与图片各缓存 1 小时 | 任意  |
 | `/订阅`                            | 查看订阅状态（全局总开关与本群开关）        | 管理员 |
 | `/订阅 新闻 [开\|关]`                 | 切换或指定开、关官方新闻订阅并展示状态       | 管理员 |
 | `/订阅 ti [开\|关]`                   | 切换或指定开、关 TI 赛事订阅并展示状态      | 管理员 |
 
 > 示例：`/添加刀塔玩家 萧瑟先辈 898754153`、`/出装 敌法师 1 dark`、`/战报 1000000000`、`/英雄池 277774684`。
 >
-> 图片风格统一由配置项 `D2W_IMAGE_THEME` 决定（默认 `light` 亮色），作用于 `/出装`、`/开黑`、`/英雄池`；`/出装` 与 `/开黑` 命令末尾的 `dark|light` 参数可临时覆盖该默认值。
+> 图片风格统一由配置项 `D2W_IMAGE_THEME` 决定（默认 `light` 亮色），作用于 `/出装`、`/开黑`、`/英雄池`、`/战绩`；`/出装`、`/开黑`、`/战绩` 命令末尾的 `dark|light` 参数可临时覆盖该默认值。
 >
 > 战队订阅支持队名、官方缩写或 team_id：`/添加刀塔战队 XG`、`/添加刀塔战队 Team Liquid`、`/添加刀塔战队 8261500` 均可；`/添加刀塔战队 CN` 一键订阅全部中国战队，对应地 `/删除刀塔战队 CN` 一键取消全部中国战队。
 > 名单来自 Valve 客户端登记值（含替补/教练，且存在跨队残留，"离开"播报可能滞后），首次订阅只建立基线不补播历史。
@@ -148,6 +151,7 @@ nonebot_plugin_dota2_watcher/     # 插件包
 ├── __init__.py              # 插件入口与元数据
 ├── config.py                # 插件配置
 ├── utils.py                 # 网络请求与通用工具
+├── assets.py                # 图片素材统一管理（目录 / 下载 / 缩放 / data URI 缓存）
 ├── dota_dicts.py            # DOTA2 静态字典（含锐评语句库 ROAST_LINES）
 ├── hero_nicknames.py        # 英雄昵称映射
 ├── handlers/                # NoneBot 交互层
@@ -161,6 +165,7 @@ nonebot_plugin_dota2_watcher/     # 插件包
 │   ├── request_match.py     # Steam / OpenDota 请求
 │   ├── d2pt.py              # D2PT 数据
 │   ├── xiaoheihe.py         # 小黑盒比赛数据源（OpenDota 兜底）
+│   ├── xiaoheihe_overview.py # 小黑盒玩家战绩总览（/战绩，免签名）
 │   ├── ti_results.py        # TI 赛果
 │   ├── pro_peers.py         # 职业选手对战记录（Stratz）
 │   ├── playmates.py         # 开黑记录（Stratz 同队队友聚合）
@@ -175,8 +180,14 @@ nonebot_plugin_dota2_watcher/     # 插件包
 │   ├── hero_pool.py         # 英雄池环形图生成
 │   ├── playmates.py         # 开黑记录图生成
 │   ├── pro_peers.py         # 职业选手对战记录图生成
+│   ├── xiaoheihe_overview.py # 小黑盒最近战绩图生成（/战绩）
 │   └── shared_browser.py    # 共享 Playwright 浏览器
 ```
+
+> 图片素材统一由 `assets.py` 管理：英雄宽图 `images/hero/`、物品 `images/item/`、
+> 技能 `images/abilities/`、英雄小头像 `images/icons/`、玩家头像 `images/avatars/`、
+> 战队 logo `images/logo/`、段位徽章 `images/rank/`、杂项 `images/other/`。
+> 各生成器只通过 `assets` 取图，不再自行拼接目录或重复实现下载与 data URI 缓存。
 
 ## 致谢
 

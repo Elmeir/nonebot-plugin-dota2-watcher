@@ -160,6 +160,26 @@ def download_file(url, filepath, timeout=None, headers=None, quiet=False, retrie
     return True
 
 
+async def async_download_file(
+    url, filepath, timeout=None, headers=None, quiet=False, retries=1
+):
+    """异步下载 url 内容到本地文件（不校验 SSL，用于公开素材）。
+
+    与 download_file 行为一致，但走共享 httpx 客户端，不阻塞事件循环。
+    成功返回 True，失败返回 False。
+    """
+    try:
+        body = await async_download_bytes(url, timeout=timeout, headers=headers, retries=retries)
+    except Exception as e:
+        if not quiet:
+            print(f"警告: 下载 {os.path.basename(filepath)} 失败: {e}", file=sys.stderr)
+        return False
+    os.makedirs(os.path.dirname(os.path.abspath(filepath)) or ".", exist_ok=True)
+    with open(filepath, "wb") as f:
+        f.write(body)
+    return True
+
+
 def player_team(info: dict) -> int | None:
     """判断比赛详情中某玩家所属阵营（0 天辉 / 1 夜魇）；无法判断时返回 None。
 

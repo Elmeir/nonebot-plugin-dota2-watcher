@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import collections
-import hashlib
 import json
 import os
 import time
@@ -20,12 +19,11 @@ from pathlib import Path
 
 from nonebot.log import logger
 
-from ..config import DATA_DIR, IMAGES_DIR, config
-from ..utils import async_download_bytes, cache_with_fallback, get_http_client, load_cache
+from .. import assets
+from ..config import DATA_DIR, config
+from ..utils import cache_with_fallback, get_http_client, load_cache
 
 GRAPHQL_URL = "https://api.stratz.com/graphql"
-# 与 STRATZ 站点一致的英雄头像地址（返回 webp，体积小）
-ICON_URL = "https://cdn.stratz.com/images/dota2/heroes/{short}_icon.png"
 
 QUERY = """
 query PlayerHeroPool($id: Long!) {
@@ -292,71 +290,19 @@ def pos_distribution(matches: list[dict]) -> list[tuple[str | int, int]]:
 
 
 # ============================================================
-# 英雄头像
+# 英雄 / 玩家头像：统一走 assets（目录、下载与内存缓存均由 assets 管理）
 # ============================================================
-ICON_CACHE_DIR = IMAGES_DIR / "icons"
-AVATAR_CACHE_DIR = IMAGES_DIR / "avatars"
-
-# 内存缓存：short -> RGBA 头像，避免同一次渲染（取主色 + 画头像）重复读盘/解码。
-# Dota2 英雄数量有限，不会被无限撑大。
-_icon_mem_cache: dict[str, object] = {}
-
-
 async def load_icon_img(short: str):
     """下载（并缓存）英雄头像为 Pillow RGBA 图；失败返回 None（供 PNG 渲染用）。
 
-    网络下载用共享 httpx 客户端异步进行，不阻塞事件循环。
+    头像落盘到 assets.ICON_IMAGES_DIR，内存缓存也在 assets 内，跨模块共用同一份。
     """
-    from PIL import Image
-
-    if not short:
-        return None
-    if short in _icon_mem_cache:
-        return _icon_mem_cache[short]
-    # 缓存文件名含来源标记，避免与旧的 steam 头像混用
-    path = ICON_CACHE_DIR / f"{short}_stratz.webp"
-    try:
-        if not path.exists():
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(
-                await async_download_bytes(
-                    ICON_URL.format(short=short), timeout=config.d2w_download_timeout
-                )
-            )
-        # 直接按路径懒加载，避免再复制一份 bytes
-        img = Image.open(path).convert("RGBA")
-    except Exception as e:
-        logger.warning(f"英雄头像下载/读取失败（{short}）：{e}")
-        return None
-    _icon_mem_cache[short] = img
-    return img
-
-
-# 玩家 steam 头像：按 URL 缓存（URL 哈希命名），避免每次渲染重复下载。
-_avatar_mem_cache: dict[str, object] = {}
+    return await assets.load_hero_icon(short)
 
 
 async def load_avatar_img(url: str):
     """下载（并缓存）玩家 steam 头像为 Pillow RGBA 图；失败返回 None。
 
-    头像 URL 来自 Stratz 的 steamAccount.avatar；网络下载用共享 httpx 异步进行。
+    头像 URL 来自各数据源（Stratz / 小黑盒 / Steam），按 URL 哈希落盘，跨数据源复用。
     """
-    from PIL import Image
-
-    if not url:
-        return None
-    if url in _avatar_mem_cache:
-        return _avatar_mem_cache[url]
-    # URL 哈希作为缓存文件名，跨进程稳定（hashlib 不受 PYTHONHASHSEED 影响）
-    name = hashlib.md5(url.encode("utf-8")).hexdigest()[:16]
-    path = AVATAR_CACHE_DIR / f"avatar_{name}.png"
-    try:
-        if not path.exists():
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(await async_download_bytes(url, timeout=config.d2w_download_timeout))
-        img = Image.open(path).convert("RGBA")
-    except Exception as e:
-        logger.warning(f"玩家头像下载/读取失败：{e}")
-        return None
-    _avatar_mem_cache[url] = img
-    return img
+    return await assets.load_avatar(url)

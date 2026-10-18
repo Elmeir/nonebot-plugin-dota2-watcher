@@ -3,8 +3,9 @@
 依赖 nonebot-plugin-apscheduler，请确保已安装。
 """
 
-# 下方 require() 必须先于 nonebot_plugin_apscheduler 的导入执行，故豁免 E402。
-# ruff: noqa: E402
+# 下方 require() 必须先于 nonebot_plugin_apscheduler 的导入执行，导入语句因此被
+# require() 分隔成两段：豁免 E402（导入不在文件顶部）与 I001（导入块未排序）。
+# ruff: noqa: E402, I001
 
 from nonebot import require
 

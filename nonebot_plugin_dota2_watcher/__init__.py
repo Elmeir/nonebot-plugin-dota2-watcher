@@ -44,6 +44,7 @@ __plugin_meta__ = PluginMetadata(
         "/英雄池 [steam_id 或 昵称] [min|mid|max 或 小|中|大]：英雄池环形图（默认 min/25 场）\n"
         "/开黑 [steam_id 或 昵称] [dark|light]：最常一起开黑的队友记录图\n"
         "/pro [steam_id 或 昵称] [dark|light]：与职业选手的对战记录图\n"
+        "/战绩 [steam_id 或 昵称] [dark|light]：小黑盒最近战绩图（近20场 / 常用英雄 / 生涯纪录）\n"
         "/订阅 新闻|ti：切换新闻/TI 订阅开关\n"
         "/help：查看本插件指令列表"
     ),

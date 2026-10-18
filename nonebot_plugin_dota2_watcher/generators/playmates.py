@@ -14,16 +14,15 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import io
 import os
 import time
 
 from nonebot.log import logger
 
+from .. import assets
 from ..config import OUTPUT_DIR, config, normalize_image_theme
 from ..datasources import playmates as ds
-from ..datasources.hero_pool import load_avatar_img
 from . import shared_browser
 from .core_build import FONT_FAMILY, THEME_DARK, THEME_LIGHT, THEMES
 
@@ -42,25 +41,11 @@ IMAGE_CACHE_SECONDS = config.d2w_core_build_image_cache_seconds
 
 
 async def _avatar_data_uri(url: str) -> str:
-    """把玩家头像 URL 转成内嵌 data URI（复用 hero_pool 的下载/磁盘缓存）。
+    """把玩家头像 URL 转成内嵌 data URI（复用 assets 的下载/磁盘缓存）。
 
     失败或 URL 为空时返回空串，调用方渲染占位底色。
     """
-    if not url:
-        return ""
-    try:
-        img = await load_avatar_img(url)
-        if img is None:
-            return ""
-        from PIL import Image
-
-        thumb = img.resize((AVATAR_PX, AVATAR_PX), Image.LANCZOS)
-        buf = io.BytesIO()
-        thumb.save(buf, "PNG")
-        return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
-    except Exception as e:
-        logger.warning(f"开黑头像处理失败：{e}")
-        return ""
+    return await assets.avatar_data_uri(url, AVATAR_PX)
 
 
 def _row_html(row: dict, avatar_uri: str, theme: dict) -> str:

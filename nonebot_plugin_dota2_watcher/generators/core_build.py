@@ -13,7 +13,6 @@ DOTA2 Pro Tracker 核心出装图片生成器（HTML 渲染版）
 """
 
 import asyncio
-import base64
 import os
 import re
 import sys
@@ -33,17 +32,18 @@ else:
 # 目录配置
 # ============================================================
 # 兼容两种运行方式：作为插件包被导入，或作为独立脚本直接运行。
-# 所有目录 / URL / 缓存等配置统一从 config.py 读取。
+# 所有目录 / URL / 缓存等配置统一从 config.py 读取，图片素材目录见 assets.py。
 if __package__:
+    from .. import assets
     from .. import config as _cfg
-    from ..utils import async_download_bytes, dumpjson, image_to_data_uri, loadjson
+    from ..utils import dumpjson, loadjson
 else:
+    import assets
     import config as _cfg
-    from utils import async_download_bytes, dumpjson, image_to_data_uri, loadjson
+    from utils import dumpjson, loadjson
 
 WORK_DIR = str(_cfg.BASE_DIR)
 IMAGES_DIR = str(_cfg.IMAGES_DIR)
-ABILITIES_IMAGES_DIR = os.path.join(IMAGES_DIR, "abilities/")
 OUTPUT_DIR = str(_cfg.OUTPUT_DIR)
 # 数据/缓存 JSON 统一放在 data/ 目录
 DATA_FILE = _cfg.DATA_DIR / "d2pt_core_build.json"
@@ -74,10 +74,11 @@ UNDEFINED_IMAGE_NAME = "undefined"
 NPC_ABILITY_IDS_FILE = os.path.join(WORK_DIR, "npc_ability_ids.txt")
 NPC_ABILITY_IDS_URLS = [_cfg.NPC_ABILITY_IDS_URL]
 
-ITEM_IMAGES_DIR = os.path.join(IMAGES_DIR, "item")
+# 图片素材子目录由 assets 统一管理（技能图标 / 物品图标 / 其余杂项）
+ABILITIES_IMAGES_DIR = str(assets.ABILITY_IMAGES_DIR)
+ITEM_IMAGES_DIR = str(assets.ITEM_IMAGES_DIR)
 
-for d in [OUTPUT_DIR, ABILITIES_IMAGES_DIR, ITEM_IMAGES_DIR]:
-    os.makedirs(d, exist_ok=True)
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # ============================================================
 # 颜色风格主题
@@ -144,17 +145,8 @@ THEMES = {"dark": THEME_DARK, "light": THEME_LIGHT}
 # 工具函数
 # ============================================================
 async def _download_to(url, filepath, quiet=False):
-    """异步下载 url 内容到本地文件，成功返回 True，失败返回 False。"""
-    try:
-        body = await async_download_bytes(url, timeout=_cfg.config.d2w_download_timeout)
-    except Exception as e:
-        if not quiet:
-            print(f"警告: 下载 {os.path.basename(filepath)} 失败: {e}", file=sys.stderr)
-        return False
-    os.makedirs(os.path.dirname(os.path.abspath(filepath)) or ".", exist_ok=True)
-    with open(filepath, "wb") as f:
-        f.write(body)
-    return True
+    """异步下载 url 内容到本地文件，成功返回 True，失败返回 False（见 assets）。"""
+    return await assets.download_to(url, filepath, quiet=quiet)
 
 
 def _repo_icon_url(name):
@@ -379,23 +371,7 @@ _MISSING_ITEMS = set()
 
 def _solid_png_data_url(rgb=(128, 128, 128), w=64, h=36):
     """生成一个纯色 PNG 的 data URL（用于无图标的占位）。"""
-    import struct
-    import zlib
-
-    def _chunk(tag, data):
-        c = struct.pack(">I", len(data)) + tag + data
-        c += struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
-        return c
-
-    ihdr = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
-    raw = b"".join(b"\x00" + bytes(rgb) * w for _ in range(h))
-    png = (
-        b"\x89PNG\r\n\x1a\n"
-        + _chunk(b"IHDR", ihdr)
-        + _chunk(b"IDAT", zlib.compress(raw))
-        + _chunk(b"IEND", b"")
-    )
-    return "data:image/png;base64," + base64.b64encode(png).decode()
+    return assets.solid_data_uri(rgb, w, h)
 
 
 async def ability_name_to_image(ability_name):
@@ -419,14 +395,14 @@ async def ability_name_to_image(ability_name):
                 bonus_path,
             )
         if os.path.exists(bonus_path):
-            return image_to_data_uri(bonus_path)
+            return assets.file_data_uri(bonus_path)
     # 空技能槽（ability_base，ID 0）：使用 undefined 图标（仓库 gh-proxy）
     if ability_name == "ability_base":
         undefined_path = os.path.join(ABILITIES_IMAGES_DIR, f"{UNDEFINED_IMAGE_NAME}.png")
         if not os.path.exists(undefined_path):
             await _download_to(_repo_icon_url(UNDEFINED_IMAGE_NAME), undefined_path)
         if os.path.exists(undefined_path):
-            return image_to_data_uri(undefined_path)
+            return assets.file_data_uri(undefined_path)
         return _solid_png_data_url()
     if ability_name in _MISSING_ABILITIES:
         return _solid_png_data_url()
@@ -439,7 +415,7 @@ async def ability_name_to_image(ability_name):
             return _solid_png_data_url()
     if os.path.exists(local_path):
         try:
-            return image_to_data_uri(local_path)
+            return assets.file_data_uri(local_path)
         except Exception:
             pass
     return _solid_png_data_url()
@@ -667,7 +643,7 @@ async def build_item_card(item, theme=THEME_LIGHT, show_time=True, show_core=Tru
             if not await _download_to(ITEM_IMAGE_URL.format(name=url_name), img_path, quiet=True):
                 _MISSING_ITEMS.add(img_filename)
     if os.path.exists(img_path):
-        bg_image = f"url('{image_to_data_uri(img_path)}')"
+        bg_image = f"url('{assets.file_data_uri(img_path)}')"
     else:
         bg_image = "none"
 

@@ -57,6 +57,7 @@ delete_team_cmd = on_command(
 roster_cmd = on_command("战队", rule=_group_rule, priority=10, block=True)
 pro_cmd = on_command("pro", aliases={"PRO"}, rule=_group_rule, priority=10, block=True)
 playmates_cmd = on_command("开黑", rule=_group_rule, priority=10, block=True)
+overview_cmd = on_command("战绩", rule=_group_rule, priority=10, block=True)
 subscribe_cmd = on_command(
     "订阅",
     rule=_group_rule,
@@ -70,6 +71,19 @@ help_cmd = on_command("help", aliases={"帮助"}, rule=_group_rule, priority=10,
 def _args(event: GroupMessageEvent) -> list[str]:
     """取命令名之后以空格分隔的参数列表。"""
     return event.get_plaintext().strip().split()[1:]
+
+
+def _optional_theme(args: list[str]) -> str | None:
+    """解析可选的风格参数（dark|light）。
+
+    未提供时返回 None（由配置项 d2w_image_theme 决定），非法时抛 ValueError。
+    """
+    if len(args) < 2:
+        return None
+    theme = args[1].strip().lower()
+    if theme not in ("dark", "light"):
+        raise ValueError("风格参数无效，请输入 dark 或 light")
+    return theme
 
 
 # ---------------------------------------------------------------
@@ -230,11 +244,10 @@ async def handle_pro(event: GroupMessageEvent):
     args = _args(event)
     if not (1 <= len(args) <= 2):
         await pro_cmd.finish("请输入：/pro [steam_id 或 玩家昵称] [dark|light]")
-    theme = None
-    if len(args) == 2:
-        if args[1].strip().lower() not in ("dark", "light"):
-            await pro_cmd.finish("风格参数无效，请输入 dark 或 light")
-        theme = args[1].strip().lower()
+    try:
+        theme = _optional_theme(args)
+    except ValueError as e:
+        await pro_cmd.finish(str(e))
     try:
         path = await service.pro_image(event.group_id, args[0], theme)
     except ValueError as e:
@@ -252,11 +265,10 @@ async def handle_playmates(event: GroupMessageEvent):
     args = _args(event)
     if not (1 <= len(args) <= 2):
         await playmates_cmd.finish("请输入：/开黑 [steam_id 或 玩家昵称] [dark|light]")
-    theme = None
-    if len(args) == 2:
-        if args[1].strip().lower() not in ("dark", "light"):
-            await playmates_cmd.finish("风格参数无效，请输入 dark 或 light")
-        theme = args[1].strip().lower()
+    try:
+        theme = _optional_theme(args)
+    except ValueError as e:
+        await playmates_cmd.finish(str(e))
     try:
         path = await service.playmates_image(event.group_id, args[0], theme)
     except ValueError as e:
@@ -264,6 +276,27 @@ async def handle_playmates(event: GroupMessageEvent):
     if path:
         await playmates_cmd.finish(MessageSegment.image(file=path))
     await playmates_cmd.finish("开黑记录生成失败")
+
+
+# ---------------------------------------------------------------
+# /战绩：小黑盒「最近战绩」图片
+# ---------------------------------------------------------------
+@overview_cmd.handle()
+async def handle_overview(event: GroupMessageEvent):
+    args = _args(event)
+    if not (1 <= len(args) <= 2):
+        await overview_cmd.finish("请输入：/战绩 [steam_id 或 玩家昵称] [dark|light]")
+    try:
+        theme = _optional_theme(args)
+    except ValueError as e:
+        await overview_cmd.finish(str(e))
+    try:
+        path = await service.xiaoheihe_overview_image(event.group_id, args[0], theme)
+    except ValueError as e:
+        await overview_cmd.finish(str(e))
+    if path:
+        await overview_cmd.finish(MessageSegment.image(file=path))
+    await overview_cmd.finish("战绩生成失败")
 
 
 # ---------------------------------------------------------------
@@ -353,6 +386,7 @@ _HELP_TEXT = (
     "/英雄池 [steam_id 或 玩家昵称]：生成英雄池环形图\n"
     "/pro [steam_id 或 玩家昵称]：与职业选手的对战记录\n"
     "/开黑 [steam_id 或 玩家昵称] [dark|light]：最常一起开黑的队友记录图\n"
+    "/战绩 [steam_id 或 玩家昵称] [dark|light]：小黑盒最近战绩图（近20场 / 常用英雄 / 生涯纪录）\n"
     "/添加刀塔战队 [队名或 team_id 或 CN]：订阅战队（CN 一键订阅全部中国战队）\n"
     "/查看刀塔战队：列出本群订阅战队\n"
     "/删除刀塔战队 [队名或 team_id 或 CN]：取消订阅战队（管理员以上，CN 一键取消全部中国战队）\n"

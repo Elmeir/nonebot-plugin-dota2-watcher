@@ -15,7 +15,6 @@
 """
 
 import asyncio
-import base64
 import gzip
 import io
 import json
@@ -29,21 +28,22 @@ from collections import deque
 from datetime import datetime, timedelta, timezone
 
 # 兼容两种运行方式：作为插件包被导入，或作为独立脚本直接运行。
-# 所有 URL / 目录 / 赛事配置统一从 config.py 读取。
+# 所有 URL / 目录 / 赛事配置统一从 config.py 读取，图片素材目录见 assets.py。
 if __package__:
+    from .. import assets
     from .. import config as _cfg
     from ..generators import shared_browser
     from ..utils import (
         cache_with_fallback,
         download_bytes,
         dumpjson,
-        image_to_data_uri,
         load_cache,
     )
 else:
+    import assets
     import config as _cfg
     import shared_browser
-    from utils import cache_with_fallback, download_bytes, dumpjson, image_to_data_uri, load_cache
+    from utils import cache_with_fallback, download_bytes, dumpjson, load_cache
 
 # TI 2026 联赛 ID（可由 dota2.com/esports/ti15/schedule 页面 URL 中的 ti15 参数确认）
 LEAGUE_ID = _cfg.TI_LEAGUE_ID
@@ -1076,8 +1076,8 @@ def fetch_liquipedia_logos():
 
 
 def _logo_cache_dir():
-    """战队 logo 本地缓存目录（images/logo）。"""
-    return _cfg.IMAGES_DIR / "logo"
+    """战队 logo 本地缓存目录（assets 统一管理的 images/logo）。"""
+    return assets.LOGO_IMAGES_DIR
 
 
 def _league_data_cache_path():
@@ -1303,15 +1303,11 @@ def _league_data_xxh64():
         return None
 
 
-def _img_to_data_uri(img):
-    """PIL Image -> base64 PNG data URI。"""
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
-
-
 def _download_logo_image(url, max_h=50):
-    """下载战队 logo，返回保留透明背景、等比缩放的 PIL Image。失败返回 None。"""
+    """下载战队 logo，返回保留透明背景、等比缩放的 PIL Image。失败返回 None。
+
+    仅保留给需要内存图的调用方；落盘与编码统一走 assets.logo_data_uri。
+    """
     if not url:
         return None
     try:
@@ -1321,28 +1317,17 @@ def _download_logo_image(url, max_h=50):
             url, timeout=5, headers={"User-Agent": HEADERS["User-Agent"]}, retries=3
         )
         src = Image.open(io.BytesIO(raw)).convert("RGBA")
-        sw, sh = src.size
-        ratio = max_h / sh
-        new_w = max(1, int(round(sw * ratio)))
-        return src.resize((new_w, max_h), Image.LANCZOS)
+        return assets.fit_max_height(src, max_h)
     except Exception:
         return None
 
 
 def _logo_data_uri_cached(tid, url):
-    """获取战队 logo 的 data URI：优先读本地缓存 images/logo/{tid}.png，缺失则下载并缓存。"""
-    if not tid or not url:
-        return None
-    cache_dir = _logo_cache_dir()
-    os.makedirs(cache_dir, exist_ok=True)
-    cache_path = os.path.join(cache_dir, f"{tid}.png")
-    if os.path.exists(cache_path):
-        return image_to_data_uri(cache_path)
-    img = _download_logo_image(url)
-    if img is None:
-        return None
-    img.save(cache_path, format="PNG")
-    return _img_to_data_uri(img)
+    """获取战队 logo 的 data URI：本地缓存 images/logo/{tid}.png 优先，缺失则下载并缓存。
+
+    目录、下载与编码统一由 assets 管理，与其它出图的图片缓存互不干扰。
+    """
+    return assets.logo_data_uri(tid, url)
 
 
 async def _prepare_report(data, output_path, prefix):

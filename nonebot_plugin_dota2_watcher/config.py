@@ -86,6 +86,8 @@ class Config(BaseModel):
     d2w_core_build_cache_seconds: int = 259200  # 核心出装数据缓存（72 小时）
     # 生成图片缓存时长（秒）：在缓存期内复用已生成的图片，避免重复渲染
     d2w_core_build_image_cache_seconds: int = 86400  # 生成图片缓存（24 小时 / 1 天）
+    # /战绩（小黑盒最近战绩）数据与生成图片的缓存时长：战绩时效性强，默认 1 小时
+    d2w_xiaoheihe_cache_seconds: int = 3600
 
 
 try:
@@ -269,6 +271,8 @@ DOTA2_API_URL = "https://www.dota2.com/webapi/IDOTA2League/GetLeagueData/v001?le
 DOTA2_HEROES_URL = "https://www.dota2.com/datafeed/herolist?language=schinese"
 STEAM_CDN = "https://cdn.cloudflare.steamstatic.com/apps/dota2/images/dota_react"
 HERO_IMAGE_URL = f"{STEAM_CDN}/heroes/{{name}}.png"
+# 英雄小头像（Stratz CDN，与 stratz.com 站点一致，返回 webp）
+HERO_ICON_URL = "https://cdn.stratz.com/images/dota2/heroes/{short}_icon.png"
 ITEM_IMAGE_URL = f"{STEAM_CDN}/items/{{name}}.png"
 ABILITY_IMAGE_URL = f"{STEAM_CDN}/abilities/{{name}}.png"
 # 战报杂项素材（logo / 段位图标等），同样走 gh-proxy 加速

@@ -24,11 +24,11 @@ from datetime import datetime
 
 from nonebot.log import logger
 
+from .. import assets
 from ..config import OUTPUT_DIR, config, normalize_image_theme
 from ..datasources import pro_peers as ds
 from . import shared_browser
 from .core_build import FONT_FAMILY, THEME_DARK, THEME_LIGHT, THEMES
-from .playmates import _avatar_data_uri
 
 # 头像渲染尺寸（像素）：2rem ≈ 38px，超采样 2x 后取 96px 源图足够清晰
 AVATAR_PX = 96
@@ -42,6 +42,11 @@ WIN_COLOR = "#7cc45c"
 LOSE_COLOR = "#d9534f"
 
 IMAGE_CACHE_SECONDS = config.d2w_core_build_image_cache_seconds
+
+
+async def _avatar_data_uri(url: str) -> str:
+    """把选手头像 URL 转成内嵌 data URI（与 /开黑 共用 assets 的下载与缓存）。"""
+    return await assets.avatar_data_uri(url, AVATAR_PX)
 
 
 def _rate_color(win: int, total: int, theme: dict) -> str:

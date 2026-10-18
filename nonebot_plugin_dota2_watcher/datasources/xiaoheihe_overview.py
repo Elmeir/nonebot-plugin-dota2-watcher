@@ -183,6 +183,34 @@ def player_name(data: dict) -> str:
     return str(header_info.get("name") or "").strip()
 
 
+def recent_match_ids(data: dict) -> list[int]:
+    """按「新 → 旧」返回 overview 里能拿到的比赛 ID 列表（去重、已过滤非法值）。
+
+    数据来自 ``recent_match``（近 20 场方块）与 ``match_list``（比赛列表），
+    两者顺序本身都是新→旧，合并后按 ID 降序排序即可（比赛 ID 全局单调递增）。
+    """
+    ids: list[int] = []
+    for item_type in ("recent_match", "match_list"):
+        for match in (modules(data).get(item_type) or {}).get("match_list") or []:
+            try:
+                mid = int(match.get("match_id"))
+            except (TypeError, ValueError):
+                continue
+            if mid > 0:
+                ids.append(mid)
+    return sorted(set(ids), reverse=True)
+
+
+def latest_match_id(data: dict) -> int:
+    """取 overview 里最新的比赛 ID；没有任何比赛时返回 0。
+
+    仅用于「战绩被隐藏」时的回退：小黑盒能拿到匿名玩家的比赛列表，
+    但数据可能滞后，调用方仍需与本地已播报的 ID 比较后再决定是否采纳。
+    """
+    ids = recent_match_ids(data)
+    return ids[0] if ids else 0
+
+
 def fetched_at(steam_id) -> float:
     """返回本地缓存文件的抓取时间（文件 mtime）；无缓存返回 0。"""
     try:

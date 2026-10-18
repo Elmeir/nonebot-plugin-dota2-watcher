@@ -19,8 +19,9 @@ from ..datasources.hero_pool import HeroPoolError
 from ..datasources.playmates import PlaymatesError
 from ..datasources.pro_peers import ProPeersError
 from ..datasources.request_match import (
-    request_match_history,
-    request_match_info_opendota,
+    SOURCE_STEAM,
+    SOURCE_XIAOHEIHE,
+    request_match_info,
     request_news,
 )
 from ..datasources.xiaoheihe_overview import OverviewError
@@ -30,11 +31,8 @@ from ..generators import pro_peers as pro_peers_gen
 from ..generators import xiaoheihe_overview as xiaoheihe_gen
 from ..utils import load_cache, player_team, run_single_flight
 from . import store
+from .match_history import fetch_recent_match, latest_known_match_id
 from .player import Player
-
-# Steam GetMatchHistory 接口存在速率限制，并发过高易触发 429/503 导致请求失败，
-# 因此用信号量限制同批并发拉取比赛历史的数量（并发上限见 config.d2w_history_concurrency）。
-_history_semaphore = asyncio.Semaphore(config.d2w_history_concurrency)
 
 
 @dataclass
@@ -42,12 +40,14 @@ class NewMatch:
     """一场待处理的新比赛：所属群 + 比赛 ID + 订阅玩家 + 比赛详情。
 
     match_info 在阶段二拉取后填充，供战报文本与图片生成复用，避免重复请求数据源。
+    source 记录比赛 ID 的来源，决定阶段二该走哪个详情接口（见 request_match_info）。
     """
 
     gid: str
     match_id: int
     players: list[Player] = field(default_factory=list)
     match_info: dict | None = None
+    source: str = SOURCE_STEAM
 
     def has_valid_info(self) -> bool:
         """比赛详情是否有效：已成功拉取且含 radiant_win 等必要字段。"""
@@ -486,11 +486,14 @@ async def _broadcast_groups(text: str | None, gids) -> None:
                 logger.exception(f"广播战队名单变动到群 {gid} 失败")
 
 
-async def _fetch_history(player: Player) -> int | None:
-    """获取玩家最近一场比赛 ID；失败时记日志并返回 None。"""
+async def _fetch_history(player: Player):
+    """获取玩家最近一场比赛（Steam 优先，战绩被隐藏时按门控回退小黑盒）。
+
+    返回 RecentMatch；网络错误等异常在本层记日志后返回 None，
+    由调用方按「本轮没有可播报的比赛」处理。
+    """
     try:
-        async with _history_semaphore:
-            return await request_match_history(player, config.d2w_steam_api_key)
+        return await fetch_recent_match(player, config.d2w_steam_api_key)
     except Exception as e:
         logger.warning(f"获取 {player.nickname} 最近比赛失败: {e}")
         return None
@@ -704,34 +707,67 @@ async def poll_new_matches() -> None:
         unique_players.setdefault(player.short_steamID, player)
     unique_list = list(unique_players.values())
 
+    # 阶段一会就地改动「战绩隐藏次数」（累加 / 归零），先记录初值，
+    # 便于本轮结束时判断是否需要落盘（见末尾 store.save）。
+    # 按对象身份去重：同一账号在多个群各有实例，两处都会被改动。
+    hidden_before = [(p, p.hidden_fail_count) for p in {id(p): p for _, p in watched}.values()]
+
     # 阶段一：并发获取去重后玩家的最近比赛 ID
+    # （Steam 优先；战绩被隐藏且累计到阈值时回退小黑盒 overview，见 match_history）
     fetched = await asyncio.gather(
         *(_fetch_history(player) for player in unique_list),
         return_exceptions=True,
     )
     history = dict(zip((p.short_steamID for p in unique_list), fetched))
 
+    # 同一账号被多个群订阅时，Player 是各群独立的实例，而阶段一只更新了参与抓取的
+    # 那个实例；这里把门控状态同步给同账号的其它实例，避免各群计数不一致
+    # （否则代表实例被删掉后计数会「凭空归零」，或各群落盘的值互相矛盾）。
+    # 小黑盒 ID 取各实例的较大者：它只应单调前进，不该因某群曾关闭播报而落后。
+    for _, player in watched:
+        source = unique_players.get(player.short_steamID)
+        if source is None or source is player:
+            continue
+        player.hidden_fail_count = source.hidden_fail_count
+        player.last_xiaoheihe_match_id = max(
+            player.last_xiaoheihe_match_id, source.last_xiaoheihe_match_id
+        )
+
     # 汇总新比赛（同一群、同一场比赛的订阅玩家合并到同一个 NewMatch）
     new_matches: dict[tuple[str, int], NewMatch] = {}
     for gid, player in watched:
         result = history.get(player.short_steamID)
+        # 只播报「比已知最新更新」的比赛：两个数据源的最近一场并不同步，
+        # 小黑盒可能滞后返回已播报过的旧比赛，靠 ID 比较挡掉（见 is_newer_match）
         if isinstance(result, Exception) or not result:
             continue
-        if result == player.last_DOTA2_match_ID:
+        if result.match_id <= latest_known_match_id(player):
             continue
-        match = new_matches.setdefault((gid, result), NewMatch(gid=gid, match_id=result))
+        match = new_matches.setdefault(
+            (gid, result.match_id),
+            NewMatch(gid=gid, match_id=result.match_id, source=result.source),
+        )
         match.players.append(player)
 
+    # 战绩隐藏次数也会变化（累加 / 归零），即使本轮没有新比赛也要落盘，
+    # 否则重启后门控计数丢失，可能刚启动就立刻访问小黑盒
+    hidden_changed = any(p.hidden_fail_count != count for p, count in hidden_before)
+
     if not new_matches:
+        if hidden_changed:
+            store.save()
         return
 
-    # 阶段二：并发获取每场新比赛的详情
-    match_ids = {m.match_id for m in new_matches.values()}
+    # 阶段二：并发获取每场新比赛的详情。
+    # 比赛 ID 来自小黑盒时必须用小黑盒详情接口：这类玩家的战绩在 OpenDota 里是匿名的，
+    # 拿 OpenDota 数据会定位不到本人（详见 request_match_info）。
+    # 同一场比赛被多个群订阅时只拉取一次，因此按比赛 ID 去重。
+    sources = {m.match_id: m.source for m in new_matches.values()}
     infos = await asyncio.gather(
-        *(request_match_info_opendota(mid) for mid in match_ids),
+        *(request_match_info(mid, src) for mid, src in sources.items()),
         return_exceptions=True,
     )
-    info_map = dict(zip(match_ids, infos))
+    info_map = dict(zip(sources, infos))
 
     changed = False
     for match in new_matches.values():
@@ -740,13 +776,16 @@ async def poll_new_matches() -> None:
             continue
         for player in match.players:
             player.last_DOTA2_match_ID = match.match_id
+            if match.source == SOURCE_XIAOHEIHE:
+                # 记录小黑盒给到的 ID：小黑盒数据可能滞后，留作跨数据源判旧的基准
+                player.last_xiaoheihe_match_id = match.match_id
         changed = True
         # 自定义/活动等模式不播报
         if match.match_info.get("game_mode") in config.d2w_game_mode:
             continue
         await _report_match(match)
 
-    if changed:
+    if changed or hidden_changed:
         store.save()
 
 

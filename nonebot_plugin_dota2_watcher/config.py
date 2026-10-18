@@ -79,6 +79,13 @@ class Config(BaseModel):
     d2w_roster_poll_interval: int = 21600
     # 拉取玩家比赛历史时的并发上限（Steam 接口存在速率限制，过大易触发 429/503）
     d2w_history_concurrency: int = 3
+    # 战绩被隐藏（Steam 返回 status 15）时的回退开关：开启后连续失败达到阈值时
+    # 改从小黑盒 overview 取最近比赛 ID（小黑盒对隐藏战绩的玩家仍能拿到匿名数据）。
+    # 关闭后隐藏战绩的玩家直接跳过，不会访问小黑盒。
+    d2w_xiaoheihe_fallback_enabled: bool = True
+    # 连续「战绩被隐藏」多少次后才回退小黑盒；用于控制小黑盒访问频率、规避风控。
+    # 每次尝试回退后计数归零，因此最坏情况下每 N 轮轮询才会访问一次小黑盒。
+    d2w_hidden_fallback_threshold: int = 10
 
     # ===================== 缓存 =====================
     # 数据缓存时长（秒）

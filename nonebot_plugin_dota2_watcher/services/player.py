@@ -20,6 +20,11 @@ class Player:
     # 已计入纪录的比赛 ID：同一玩家被多个群订阅时同一场会被处理多次，
     # 用它保证一场只累加一次
     streak_match_id: int = 0
+    # 连续「战绩被隐藏」次数：Steam 返回 status 15 时累加，Steam 恢复正常时归零。
+    # 达到阈值才回退小黑盒（见 services/match_history.py），用于控制小黑盒访问频率
+    hidden_fail_count: int = 0
+    # 最近一次从小黑盒采纳的比赛 ID：小黑盒数据可能滞后，用它作为跨数据源判旧的基准
+    last_xiaoheihe_match_id: int = 0
     # 最近一场比赛的对局数据（由 generate_message 填充）
     stats: dict[str, Any] = field(default_factory=dict)
 
@@ -33,6 +38,8 @@ class Player:
             "win_streak": self.win_streak,
             "lose_streak": self.lose_streak,
             "streak_match_id": self.streak_match_id,
+            "hidden_fail_count": self.hidden_fail_count,
+            "last_xiaoheihe_match_id": self.last_xiaoheihe_match_id,
         }
 
     @classmethod
@@ -46,6 +53,8 @@ class Player:
             win_streak=int(d.get("win_streak", 0) or 0),
             lose_streak=int(d.get("lose_streak", 0) or 0),
             streak_match_id=int(d.get("streak_match_id", 0) or 0),
+            hidden_fail_count=int(d.get("hidden_fail_count", 0) or 0),
+            last_xiaoheihe_match_id=int(d.get("last_xiaoheihe_match_id", 0) or 0),
         )
 
     def load_player_info(self, info: dict) -> None:

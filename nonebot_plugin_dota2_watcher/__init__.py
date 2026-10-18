@@ -11,6 +11,8 @@ D2PT 位置数据、核心出装图片、TI 战报图片。
     D2W_GROUP_MODE      群组生效模式：all / whitelist / blacklist，默认 all
     D2W_GROUP_WHITELIST 白名单群号列表，如 [123456789]
     D2W_GROUP_BLACKLIST 黑名单群号列表，如 [123456789]
+    D2W_XIAOHEIHE_FALLBACK_ENABLED 战绩被隐藏时是否回退小黑盒，默认 True
+    D2W_HIDDEN_FALLBACK_THRESHOLD  连续隐藏多少次后才回退小黑盒，默认 10
 """
 
 from nonebot import get_driver, require

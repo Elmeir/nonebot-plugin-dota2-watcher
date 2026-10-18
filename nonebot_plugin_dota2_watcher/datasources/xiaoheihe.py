@@ -315,6 +315,8 @@ def convert_player(xp, duration, name2id):
         "assists": int(kda.get("assist") or 0),
         "kda": float(kda.get("kd") or 0),
         "xiaoheihe_score": xiaoheihe_score,
+        # 小黑盒自己评出的 MVP（每场仅标记一位，通常是胜方），战报优先采用
+        "is_mvp": int(xp.get("is_mvp") or 0),
         "last_hits": last_hits,
         "denies": denies,
         "creeps_stacked": creeps_stacked,

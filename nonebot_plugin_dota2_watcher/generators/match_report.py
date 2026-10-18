@@ -96,6 +96,19 @@ def font_getsize(font, text):
         return (width, height)
 
 
+def font_glyph_bbox(font, text):
+    """返回文本实际字形包围盒 (左, 上, 右, 下)，用于精确居中/贴角。
+
+    与 font_getsize 的区别：后者取字体行高（含下伸空白），本函数只算字形本身，
+    画角标底衬时不会被行高撑大。老版本 Pillow 无 getbbox 时退回整行尺寸。
+    """
+    try:
+        return font.getbbox(text)
+    except Exception:
+        w, h = font_getsize(font, text)
+        return (0, 0, w, h)
+
+
 _FONT_CMAP_CACHE = {}
 _FONTTOOLS_AVAILABLE = None
 
@@ -745,6 +758,64 @@ def _rank_badge(rank_num, star, size):
     return rank_img.copy()
 
 
+# MVP 金框渐变：上亮 → 中暗 → 下亮，模拟金属高光；纯色描边太"贴纸"，渐变更接近奖牌质感
+_GOLD_STOPS = (
+    (0.00, (255, 246, 190)),
+    (0.18, (247, 205, 78)),
+    (0.50, (176, 124, 20)),
+    (0.78, (247, 205, 78)),
+    (1.00, (255, 246, 190)),
+)
+# 渐变按尺寸缓存：同一局里所有 MVP 框尺寸一致，算一次即可复用
+_GOLD_GRADIENT_CACHE = {}
+# 金框（带透明内孔的 RGBA）缓存：(宽, 高, 边宽) -> 可直接 paste 的帧
+_MVP_FRAME_CACHE = {}
+
+
+def _gold_gradient(size):
+    """生成竖向金色渐变 RGB 图，尺寸为 size=(宽, 高)。"""
+    cached = _GOLD_GRADIENT_CACHE.get(size)
+    if cached is not None:
+        return cached.copy()
+    w, h = size
+    colors = []
+    for y in range(h):
+        t = y / max(h - 1, 1)
+        color = _GOLD_STOPS[-1][1]
+        for i in range(len(_GOLD_STOPS) - 1):
+            t0, c0 = _GOLD_STOPS[i]
+            t1, c1 = _GOLD_STOPS[i + 1]
+            if t <= t1:
+                k = 0.0 if t1 == t0 else (t - t0) / (t1 - t0)
+                k = min(max(k, 0.0), 1.0)
+                color = tuple(int(c0[j] + (c1[j] - c0[j]) * k) for j in range(3))
+                break
+        colors.append(color)
+    gradient = Image.new("RGB", (w, h))
+    for y, color in enumerate(colors):
+        gradient.paste(color, (0, y, w, y + 1))
+    _GOLD_GRADIENT_CACHE[size] = gradient
+    return gradient.copy()
+
+
+def _mvp_frame(size, width):
+    """返回 size 大小、四边宽 width 的金色渐变边框（RGBA，中间透明）。
+
+    中间留空，因此可以盖在等级角标之上而不遮挡角标内容。
+    """
+    key = (size, width)
+    cached = _MVP_FRAME_CACHE.get(key)
+    if cached is not None:
+        return cached.copy()
+    w, h = size
+    mask = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(mask).rectangle((0, 0, w - 1, h - 1), outline=255, width=width)
+    frame = _gold_gradient((w, h)).convert("RGBA")
+    frame.putalpha(mask)
+    _MVP_FRAME_CACHE[key] = frame
+    return frame.copy()
+
+
 # ============================================================
 # 获取比赛数据（异步）
 # ============================================================
@@ -1098,6 +1169,53 @@ def get_team_by_slot(slot):
     return slot // 100
 
 
+def mvp_point(player):
+    """本地 MVP 评分：击杀/助攻为主，伤害、塔伤、治疗按系数折算。
+
+    塔伤权重取 0.001（与英雄伤害同档）：拆塔多不等于整局贡献大，
+    权重过高会让纯带线位压过参团核心。
+    """
+    return (
+        (player.get("kills") or 0) * 5
+        + (player.get("assists") or 0) * 3
+        + (player.get("stuns") or 0) * 0.5
+        + (player.get("hero_damage") or 0) * 0.001
+        + (player.get("tower_damage") or 0) * 0.001
+        + (player.get("hero_healing") or 0) * 0.002
+    )
+
+
+def pick_mvp_index(match):
+    """选出本场 MVP 的 players 下标；无法判定时返回 None。
+
+    优先采用数据源自带的 MVP 标记（目前只有小黑盒的 is_mvp 提供，
+    由平台按自己的评分模型给出，通常标在胜方）；数据源没有标记时
+    回退到本地评分：在胜方五人中取 mvp_point 最高者。
+    """
+    players = match.get("players") or []
+    if not players:
+        return None
+    for i, p in enumerate(players):
+        try:
+            if int(p.get("is_mvp") or 0) == 1:
+                return i
+        except (TypeError, ValueError):
+            continue
+    return pick_best_index(match, 1 - int(match["radiant_win"]))
+
+
+def pick_best_index(match, team):
+    """返回指定阵营（0 天辉 / 1 夜魇）里本地评分最高的 players 下标。"""
+    players = match.get("players") or []
+    start = team * 5
+    best_idx, best_point = None, 0.0
+    for i in range(start, min(start + 5, len(players))):
+        point = mvp_point(players[i])
+        if point > best_point:
+            best_idx, best_point = i, point
+    return best_idx
+
+
 # ============================================================
 # 战报图片生成（异步）
 # ============================================================
@@ -1171,10 +1289,15 @@ def _render_match_image(match, font_paths, scale, output_path, match_id, t0):
     font_size = _sf(12)  # 11*1.4≈15.4px，避开 15.5~16.4px（微软雅黑丢失"济"顶部小笔画的区间）
     font = ImageFont.truetype(font_paths[0], font_size)
     font2 = ImageFont.truetype(font_paths[0], _sf(18))
+    mvp_font = ImageFont.truetype(font_paths[0], _sf(9))  # MVP 勋章字号
+    lv_font = ImageFont.truetype(font_paths[0], _sf(10))  # 等级角标字号（略小于正文）
     draw = ImageDraw.Draw(image)
 
     RADIANT_GREEN = (60, 144, 40)
     DIRE_RED = (156, 54, 40)
+    # MVP 视觉：金色边框 + 金色角标（与 /战绩 的 MVP 角标同色系，深浅两档避免糊在一起）
+    MVP_GOLD = (245, 197, 66)
+    MVP_INK = (58, 42, 0)
     total_tower_hp = (
         4500 + 2600 * 2 + 1000 * 7 + 2200 * 3 + 1300 * 3 + 2500 * 3 + 2500 * 3 + 1800 * 3
     )
@@ -1270,6 +1393,12 @@ def _render_match_image(match, font_paths, scale, output_path, match_id, t0):
         "participation": [0, 999, 999, 999999],
     }
 
+    # MVP 需在绘制玩家行之前确定（角标与金框随英雄图一起画），
+    # 因此先按数据源标记 / 本地评分定下标，再进入渲染循环。
+    mvp_idx = pick_mvp_index(match)
+    # 败方最佳沿用旧版「魂」字样：本地评分最高的败方玩家
+    soul_idx = pick_best_index(match, 1 - winner)
+
     for slot in range(0, 2):
         team_damage = 0
         team_damage_received = 0
@@ -1278,7 +1407,6 @@ def _render_match_image(match, font_paths, scale, output_path, match_id, t0):
         team_deaths = 0
         team_gold = 0
         team_exp = 0
-        max_mvp_point = [0, 0]
 
         draw.text(
             (_s(50), _s(126) + _s(385) * slot),
@@ -1308,28 +1436,55 @@ def _render_match_image(match, font_paths, scale, output_path, match_id, t0):
             team_gold += p["net_worth"]
             team_exp += p["total_xp"]
 
-            hero_img = get_scaled_image(
-                "hero_{}.png".format(HEROES.get(p["hero_id"])), (_s(64), _s(36))
+            hero_x = _s(10)
+            hero_y = _s(170) + _s(60) * slot + _s(65) * idx
+            hero_w, hero_h = _s(64), _s(36)
+            image.paste(
+                get_scaled_image("hero_{}.png".format(HEROES.get(p["hero_id"])), (hero_w, hero_h)),
+                (hero_x, hero_y),
             )
-            image.paste(hero_img, (_s(10), _s(170) + _s(60) * slot + _s(65) * idx))
 
-            draw.rectangle(
-                (
-                    _s(54),
-                    _s(191) + _s(60) * slot + _s(65) * idx,
-                    _s(73),
-                    _s(205) + _s(60) * slot + _s(65) * idx,
-                ),
-                fill=(50, 50, 50),
-            )
+            # 等级角标：贴英雄图左下角。底块尺寸由字形包围盒加 lv_pad 得出——
+            # lv_pad 是底块的 padding（数字到深灰底边缘的留白），不是位移。
+            # 底块贴角不内缩，非 MVP 行才不会悬空；MVP 行的金框宽 3px，
+            # padding 取得比它大，数字就不会被金框压到。
+            lv_pad_x, lv_pad_y = _s(4), _s(3)
             level = str(p["level"])
-            level_size = font_getsize(font, level)
+            lv_left, lv_top, lv_right, lv_bottom = font_glyph_bbox(lv_font, level)
+            lv_text_w, lv_text_h = lv_right - lv_left, lv_bottom - lv_top
+            lv_w, lv_h = lv_text_w + lv_pad_x * 2, lv_text_h + lv_pad_y * 2
+            lv_x = hero_x
+            lv_y = hero_y + hero_h - lv_h
+            draw.rectangle((lv_x, lv_y, lv_x + lv_w - 1, lv_y + lv_h - 1), fill=(50, 50, 50))
             draw.text(
-                (_s(71) - level_size[0], _s(190) + _s(60) * slot + _s(65) * idx),
+                (lv_x + lv_pad_x - lv_left, lv_y + lv_pad_y - lv_top),
                 level,
-                font=font,
+                font=lv_font,
                 fill=(255, 255, 255),
             )
+
+            if idx == mvp_idx:
+                # 金框画在等级角标之后（层级压过角标），中间透明，不遮挡角标内容
+                border_w = max(3, _s(2))
+                frame = _mvp_frame((hero_w, hero_h), border_w)
+                image.paste(frame, (hero_x, hero_y), frame)
+                # MVP 勋章：贴英雄图右上角，纯金色底 + 深色字（渐变只用于外框）
+                # 内缩一个边框宽度，避免被金框压住字形
+                mvp_left, mvp_top, mvp_right, mvp_bottom = font_glyph_bbox(mvp_font, "MVP")
+                mvp_text_w = mvp_right - mvp_left
+                mvp_text_h = mvp_bottom - mvp_top
+                mvp_pad_x, mvp_pad_y = _s(3), _s(1)
+                mvp_w = mvp_text_w + mvp_pad_x * 2
+                mvp_h = mvp_text_h + mvp_pad_y * 2
+                mvp_x = hero_x + hero_w - border_w - mvp_w
+                mvp_y = hero_y + border_w
+                draw.rectangle((mvp_x, mvp_y, mvp_x + mvp_w - 1, mvp_y + mvp_h - 1), fill=MVP_GOLD)
+                draw.text(
+                    (mvp_x + mvp_pad_x - mvp_left, mvp_y + mvp_pad_y - mvp_top),
+                    "MVP",
+                    font=mvp_font,
+                    fill=MVP_INK,
+                )
 
             rank = p.get("rank_tier") if p.get("rank_tier") else 0
             rank_num, star = rank // 10, rank % 10
@@ -1431,16 +1586,6 @@ def _render_match_image(match, font_paths, scale, output_path, match_id, t0):
             )
 
             p["title_position"] = [_s(10), _s(209) + _s(60) * slot + _s(65) * idx]
-            mvp_point = (
-                p["kills"] * 5
-                + p["assists"] * 3
-                + p["stuns"] * 0.5
-                + p["hero_damage"] * 0.001
-                + p["tower_damage"] * 0.01
-                + p["hero_healing"] * 0.002
-            )
-            if mvp_point > max_mvp_point[1]:
-                max_mvp_point = [idx, mvp_point]
 
             stat_checks = [
                 ("net", p["net_worth"], "value"),
@@ -1637,12 +1782,9 @@ def _render_match_image(match, font_paths, scale, output_path, match_id, t0):
                 fill=(0, 0, 0),
             )
 
-        if slot == winner:
-            title_pos = match["players"][max_mvp_point[0]]["title_position"]
-            draw.text((title_pos[0], title_pos[1]), "MVP", font=font, fill=(255, 127, 39))
-            title_pos[0] += font_getsize(font, "MVP")[0] + _s(1)
-        else:
-            title_pos = match["players"][max_mvp_point[0]]["title_position"]
+        if slot != winner and soul_idx is not None and soul_idx != mvp_idx:
+            # 败方最佳只保留「魂」字样（MVP 已改为英雄图角标，不再占文字位）
+            title_pos = match["players"][soul_idx]["title_position"]
             draw.text((title_pos[0], title_pos[1]), "魂", font=font, fill=(0, 162, 232))
             title_pos[0] += font_getsize(font, "魂")[0] + _s(1)
 

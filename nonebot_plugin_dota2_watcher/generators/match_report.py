@@ -540,6 +540,10 @@ SLOT = ["Radiant", "Dire"]
 SLOT_CHINESE = ["天辉", "夜魇"]
 ITEM_SLOTS = ["item_0", "item_1", "item_2", "item_3", "item_4", "item_5", "item_neutral"]
 BACKPACK_SLOTS = ["backpack_0", "backpack_1", "backpack_2"]
+# 独行德鲁伊的熊灵（spirit_bear）自带 6 格装备，战报里用它替换 3 格背包栏
+LONE_DRUID_HERO_ID = 80
+SPIRIT_BEAR_UNIT = "spirit_bear"
+BEAR_ITEM_SLOTS = ["item_0", "item_1", "item_2", "item_3", "item_4", "item_5"]
 
 OTHER_IMAGES = [
     "hero_None",
@@ -1161,6 +1165,20 @@ def init_player(player):
         player["has_bkb"] = False
 
 
+def spirit_bear_items(player):
+    """独行德鲁伊的熊灵装备（6 格）；不是熊德或没有熊灵数据时返回 None。
+
+    熊灵由 Valve 数据放在玩家的 additional_units 里（unitname=spirit_bear），
+    小黑盒数据源在 datasources/xiaoheihe.py 里把 unit.items 也转成同样结构。
+    """
+    if player.get("hero_id") != LONE_DRUID_HERO_ID:
+        return None
+    for unit in player.get("additional_units") or []:
+        if str(unit.get("unitname") or "") == SPIRIT_BEAR_UNIT:
+            return [int(unit.get(slot) or 0) for slot in BEAR_ITEM_SLOTS]
+    return None
+
+
 # ============================================================
 # 根据slot判断队伍，0=天辉，1=夜魇
 # ============================================================
@@ -1717,28 +1735,45 @@ def _render_match_image(match, font_paths, scale, output_path, match_id, t0):
                         )
 
             # 背包物品（物品格下方，带细边框；背景上移 border 与物品栏共享底边框，避免叠加变粗）
-            # 总宽与物品栏前两格对齐：右边框与物品栏第二格的右边框重合
+            # 默认 3 格，总宽与物品栏前两格对齐：右边框与物品栏第二格的右边框重合；
+            # 独行德鲁伊把这排换成 6 格熊灵装备，格子沿用背包格尺寸，只把格数翻倍。
             bp_h = _s(19)
-            bp_span = border * 3 + cell_w * 2
-            base_bp_w, bp_extra = divmod(bp_span - border * 4, 3)
+            bp_span3 = border * 3 + cell_w * 2
+            bp_w, bp_extra = divmod(bp_span3 - border * 4, len(BACKPACK_SLOTS))
+            bear_items = spirit_bear_items(p)
+            row_items = []
+            if bear_items is not None:
+                for item_id in bear_items:
+                    if not item_id:
+                        item_img = Image.new("RGB", (bp_w, bp_h), (170, 170, 170))
+                    elif ITEMS.get(item_id, "").startswith("recipe"):
+                        item_img = get_scaled_image("item_recipe.png", (bp_w, bp_h))
+                    else:
+                        item_img = get_scaled_image(f"item_{ITEMS.get(item_id)}.png", (bp_w, bp_h))
+                    row_items.append(item_img)
+                bp_span = border * (len(row_items) + 1) + bp_w * len(row_items)
+            else:
+                for i, item in enumerate(BACKPACK_SLOTS):
+                    cell = bp_w + (1 if i < bp_extra else 0)
+                    if p.get(item, 0) == 0:
+                        item_img = Image.new("RGB", (cell, bp_h), (170, 170, 170))
+                    else:
+                        item_img = get_scaled_image(
+                            f"item_{ITEMS.get(p[item])}.png"
+                            if not ITEMS.get(p[item], "").startswith("recipe")
+                            else "item_recipe.png",
+                            (cell, bp_h),
+                        )
+                    row_items.append(item_img)
+                bp_span = bp_span3
             image.paste(
                 Image.new("RGB", (bp_span, border * 2 + bp_h), (185, 185, 185)),
                 (bar_x, bar_y + bar_h - border),
             )
             bp_x = bar_x + border
-            for i, item in enumerate(BACKPACK_SLOTS):
-                bp_w = base_bp_w + (1 if i < bp_extra else 0)
-                if p.get(item, 0) == 0:
-                    item_img = Image.new("RGB", (bp_w, bp_h), (170, 170, 170))
-                else:
-                    item_img = get_scaled_image(
-                        f"item_{ITEMS.get(p[item])}.png"
-                        if not ITEMS.get(p[item], "").startswith("recipe")
-                        else "item_recipe.png",
-                        (bp_w, bp_h),
-                    )
+            for item_img in row_items:
                 image.paste(item_img, (bp_x, bar_y + bar_h))
-                bp_x += bp_w + border
+                bp_x += item_img.width + border
 
             for buff in p["permanent_buffs"]:
                 if buff["permanent_buff"] == 2:

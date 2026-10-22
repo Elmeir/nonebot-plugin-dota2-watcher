@@ -6,6 +6,7 @@
         "teams": [team_id(int), ...],  # 订阅的战队（名单变动播报）
         "subscribe_news": bool,  # 默认 True
         "subscribe_ti": bool,    # 默认 True
+        "last_reported_match_id": int,  # 本群已播报到的比赛 ID（群维度去重）
     }}
 
 所有读写通过本模块提供的接口完成，内部使用锁保证线程安全，
@@ -27,7 +28,13 @@ _loaded = False  # 是否已从磁盘加载过（区分"未加载"与"已加载�
 
 def _new_group() -> dict:
     """创建默认的群数据结构。"""
-    return {"players": [], "teams": [], "subscribe_news": True, "subscribe_ti": True}
+    return {
+        "players": [],
+        "teams": [],
+        "subscribe_news": True,
+        "subscribe_ti": True,
+        "last_reported_match_id": 0,
+    }
 
 
 def _ensure_dir() -> None:
@@ -63,6 +70,7 @@ def load() -> dict[str, dict]:
                 group["teams"] = [int(t) for t in value.get("teams", []) if str(t).isdigit()]
                 group["subscribe_news"] = bool(value.get("subscribe_news", True))
                 group["subscribe_ti"] = bool(value.get("subscribe_ti", True))
+                group["last_reported_match_id"] = int(value.get("last_reported_match_id", 0) or 0)
                 _data[str(gid)] = group
         _loaded = True
         if migrated:
@@ -85,6 +93,7 @@ def save() -> None:
                 "teams": list(info.get("teams", [])),
                 "subscribe_news": info.get("subscribe_news", True),
                 "subscribe_ti": info.get("subscribe_ti", True),
+                "last_reported_match_id": int(info.get("last_reported_match_id", 0) or 0),
             }
         dumpjson(tmp, _STORE_FILE)
 
@@ -107,6 +116,20 @@ def get_group(gid: str) -> list[Player]:
 def get_group_settings(gid: str) -> dict:
     """返回某群的设置（news / ti 开关）；不存在时创建默认。"""
     return load().setdefault(str(gid), _new_group())
+
+
+def get_last_reported_match_id(gid: str) -> int:
+    """返回某群已播报到的比赛 ID；从未播报过时为 0。"""
+    with _lock:
+        return int(load().get(str(gid), {}).get("last_reported_match_id", 0) or 0)
+
+
+def set_last_reported_match_id(gid: str, match_id: int) -> None:
+    """记录某群已播报到的比赛 ID（只增不减，避免旧比赛把基线拉低）。"""
+    with _lock:
+        info = load().setdefault(str(gid), _new_group())
+        if int(match_id or 0) > int(info.get("last_reported_match_id", 0) or 0):
+            info["last_reported_match_id"] = int(match_id)
 
 
 def toggle_subscription(gid: str, key: str) -> bool:

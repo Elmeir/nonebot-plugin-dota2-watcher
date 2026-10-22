@@ -13,8 +13,10 @@
 已知最新 ID 取 ``last_DOTA2_match_ID`` 与 ``last_xiaoheihe_match_id`` 的较大者，
 这样任一来源播报过的比赛都不会被另一个来源重复播报。
 
-顺带复用 overview 缓存：回退时拉到的 overview 会按 ``d2w_xiaoheihe_cache_seconds``
+顺带回写 overview 缓存：回退时拉到的 overview 仍会按 ``d2w_xiaoheihe_cache_seconds``
 （默认 1 小时）落盘，随后用户执行 /战绩 时直接命中同一份缓存，不重复请求。
+注意方向是单向的 —— 回退**不读**这份缓存（必须拿最新的比赛列表，见
+``_xiaoheihe_recent_match``），只有 /战绩 会读。
 """
 
 from __future__ import annotations
@@ -71,8 +73,15 @@ def _hidden_threshold() -> int:
 
 
 async def _xiaoheihe_recent_match(player: Player) -> RecentMatch:
-    """从小黑盒 overview 取最近比赛 ID；无数据或不比已知最新更新时返回空结果。"""
-    data = await overview.fetch_overview(player.short_steamID)
+    """从小黑盒 overview 取最近比赛 ID；无数据或不比已知最新更新时返回空结果。
+
+    必须 refresh=True 绕开 overview 的「/战绩」缓存（d2w_xiaoheihe_cache_seconds,
+    默认 1 小时）：轮询关心的是「现在有没有新比赛」，读旧缓存会拿到过期列表，
+    导致新比赛最长被压到缓存过期才发现（或反而播一场已过时的旧比赛）。
+    访问频率由上面的门控限制（每 threshold 轮才调到这里），无需再用缓存节流；
+    拉取失败时 fetch_overview 仍会回退本地缓存，不会让本轮回退直接失败。
+    """
+    data = await overview.fetch_overview(player.short_steamID, refresh=True)
     match_id = overview.latest_match_id(data)
     if not match_id:
         logger.info(f"{player.nickname} 小黑盒也没有可用的比赛记录")

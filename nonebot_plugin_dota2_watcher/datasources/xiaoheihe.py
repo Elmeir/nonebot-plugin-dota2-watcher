@@ -25,6 +25,9 @@ API_BASE = "https://api.xiaoheihe.cn"
 # 注意：该接口 URL 不能带末尾斜杠（带斜杠会 404）；hkey 签名内部会自行归一化路径，无影响
 MATCH_DETAIL_PATH = "/game/dota2/match_detail"
 
+# 独行德鲁伊：小黑盒把熊灵的 6 格装备放在玩家对象的 unit.items 里
+LONE_DRUID_HERO_ID = 80
+
 # 小黑盒 Dota2 比赛详情接口固定请求参数（与 tests/_xiaoheihe.py 保持一致）
 MATCH_BASE_PARAMS = {
     "os_type": "web",
@@ -286,6 +289,11 @@ def convert_player(xp, duration, name2id):
     bp_ids = [item_id(u, name2id) for u in (xp.get("backpack") or [])]
     while len(bp_ids) < 3:
         bp_ids.append(0)
+    # 独行德鲁伊的熊灵装备：小黑盒放在 unit.items（6 格），
+    # 转成与 OpenDota additional_units 一致的结构，供战报画 6 格装备格
+    bear_items = []
+    if int(hero_info.get("hero_id") or 0) == LONE_DRUID_HERO_ID:
+        bear_items = [item_id(u, name2id) for u in ((xp.get("unit") or {}).get("items") or [])]
 
     xp_per_min = leading_int(hero_data_value(hero_data, "XPM"))
     gpm = leading_int(hero_data_value(hero_data, "GPM"))
@@ -340,6 +348,11 @@ def convert_player(xp, duration, name2id):
         "backpack_0": bp_ids[0],
         "backpack_1": bp_ids[1],
         "backpack_2": bp_ids[2],
+        "additional_units": (
+            [{"unitname": "spirit_bear", **dict(zip((f"item_{i}" for i in range(6)), bear_items))}]
+            if bear_items
+            else []
+        ),
         "aghanims_scepter": int(xp.get("aghanims_scepter") or 0),
         "aghanims_shard": int(xp.get("aghanims_shard") or 0),
         "purchase_log": [],

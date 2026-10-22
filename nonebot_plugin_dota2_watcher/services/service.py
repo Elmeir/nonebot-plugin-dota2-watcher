@@ -743,6 +743,12 @@ async def poll_new_matches() -> None:
             continue
         if result.match_id <= latest_known_match_id(player):
             continue
+        # 群维度去重：同一场比赛只要有本群任一玩家播过，就不再重播。
+        # 玩家维度的 last_DOTA2_match_ID 挡不住这种重复 —— 战绩被隐藏的玩家要等
+        # 门控攒够轮次才回退小黑盒，等它拿到 ID 时，同群的公开玩家早已把这场播完了
+        # （那时该隐藏玩家的 last_DOTA2_match_ID 还是 0，看起来仍是"新比赛"）。
+        if result.match_id <= store.get_last_reported_match_id(gid):
+            continue
         match = new_matches.setdefault(
             (gid, result.match_id),
             NewMatch(gid=gid, match_id=result.match_id, source=result.source),
@@ -774,6 +780,9 @@ async def poll_new_matches() -> None:
         match.match_info = info_map.get(match.match_id)
         if not match.has_valid_info():
             continue
+        # 先记下群级已播报水位：即使本轮播报过程出问题，也不会在下一轮重播同一场。
+        # 只增不减，旧比赛（小黑盒滞后下发）把水位拉低反而会造成重播。
+        store.set_last_reported_match_id(match.gid, match.match_id)
         for player in match.players:
             player.last_DOTA2_match_ID = match.match_id
             if match.source == SOURCE_XIAOHEIHE:

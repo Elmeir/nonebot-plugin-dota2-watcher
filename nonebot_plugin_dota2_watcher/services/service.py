@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from nonebot import get_bots
+from nonebot.adapters import Bot
 from nonebot.adapters.onebot.v11 import Message, MessageSegment
 from nonebot.log import logger
 
@@ -31,7 +32,7 @@ from ..generators import pro_peers as pro_peers_gen
 from ..generators import xiaoheihe_overview as xiaoheihe_gen
 from ..utils import load_cache, player_team, run_single_flight
 from . import store
-from .match_history import fetch_recent_match, latest_known_match_id
+from .match_history import RecentMatch, fetch_recent_match, latest_known_match_id
 from .player import Player
 
 
@@ -446,6 +447,17 @@ async def _cn_rosters_report(key: str) -> str:
 # ---------------------------------------------------------------
 # 群播报
 # ---------------------------------------------------------------
+# 向 OneBot 后端发消息的超时上限（秒）。OneBot v11 适配器另有 api_timeout（默认 30 秒），
+# 但它可被配置改大或关掉，且每次发送各自计时：群多、bot 多时一轮串行发送的总耗时仍需兜底，
+# 否则协议端假死会把整轮轮询（乃至之后每一轮）一直挂住。超时后放弃本次发送并记日志。
+_SEND_TIMEOUT = 60
+
+
+async def _send_group(bot: Bot, gid: str, msg: Message) -> None:
+    """向群发一条消息，超时即放弃（后端不响应时不无限等待）。"""
+    await asyncio.wait_for(bot.send_group_msg(group_id=int(gid), message=msg), _SEND_TIMEOUT)
+
+
 async def _broadcast(text: str | None, filter_key: str | None = None) -> None:
     """向群广播一条文本消息。filter_key 为 "subscribe_news"/"subscribe_ti" 时按开关过滤。"""
     if not text:
@@ -463,7 +475,7 @@ async def _broadcast(text: str | None, filter_key: str | None = None) -> None:
             continue
         for bot in bots.values():
             try:
-                await bot.send_group_msg(group_id=int(gid), message=msg)
+                await _send_group(bot, gid, msg)
             except Exception:
                 logger.exception(f"广播消息到群 {gid} 失败")
 
@@ -481,7 +493,7 @@ async def _broadcast_groups(text: str | None, gids) -> None:
             continue
         for bot in bots.values():
             try:
-                await bot.send_group_msg(group_id=int(gid), message=msg)
+                await _send_group(bot, gid, msg)
             except Exception:
                 logger.exception(f"广播战队名单变动到群 {gid} 失败")
 
@@ -589,7 +601,7 @@ async def _report_match(match: NewMatch) -> None:
         return
     for bot in bots.values():
         try:
-            await bot.send_group_msg(group_id=int(match.gid), message=msg)
+            await _send_group(bot, match.gid, msg)
         except Exception:
             logger.exception(f"发送战报到群 {match.gid} 失败")
 
@@ -735,6 +747,9 @@ async def poll_new_matches() -> None:
 
     # 汇总新比赛（同一群、同一场比赛的订阅玩家合并到同一个 NewMatch）
     new_matches: dict[tuple[str, int], NewMatch] = {}
+    # 本群已经播报过、因此不再重复播报的比赛。这里仍要补记这些玩家的胜负，
+    # 否则他们的连胜/连败会漏掉这一场（见后面的 quiet 处理）。
+    quiet: list[tuple[Player, RecentMatch]] = []
     for gid, player in watched:
         result = history.get(player.short_steamID)
         # 只播报「比已知最新更新」的比赛：两个数据源的最近一场并不同步，
@@ -747,7 +762,9 @@ async def poll_new_matches() -> None:
         # 玩家维度的 last_DOTA2_match_ID 挡不住这种重复 —— 战绩被隐藏的玩家要等
         # 门控攒够轮次才回退小黑盒，等它拿到 ID 时，同群的公开玩家早已把这场播完了
         # （那时该隐藏玩家的 last_DOTA2_match_ID 还是 0，看起来仍是"新比赛"）。
+        # 不播报，但这一场的胜负还得记到他头上，否则连胜/连败会漏一场。
         if result.match_id <= store.get_last_reported_match_id(gid):
+            quiet.append((player, result))
             continue
         match = new_matches.setdefault(
             (gid, result.match_id),
@@ -759,7 +776,7 @@ async def poll_new_matches() -> None:
     # 否则重启后门控计数丢失，可能刚启动就立刻访问小黑盒
     hidden_changed = any(p.hidden_fail_count != count for p, count in hidden_before)
 
-    if not new_matches:
+    if not new_matches and not quiet:
         if hidden_changed:
             store.save()
         return
@@ -768,16 +785,23 @@ async def poll_new_matches() -> None:
     # 比赛 ID 来自小黑盒时必须用小黑盒详情接口：这类玩家的战绩在 OpenDota 里是匿名的，
     # 拿 OpenDota 数据会定位不到本人（详见 request_match_info）。
     # 同一场比赛被多个群订阅时只拉取一次，因此按比赛 ID 去重。
-    sources = {m.match_id: m.source for m in new_matches.values()}
+    # 键带上数据源：同一场比赛可能一路由公开玩家走 Steam 拿到、另一路由隐藏战绩
+    # 玩家走小黑盒拿到，两个来源的详情并不等价（OpenDota 里隐藏玩家的 account_id
+    # 可能缺失，用它判不出胜负），因此两个来源分别取。
+    wanted: dict[tuple[int, str], None] = {}
+    for match in new_matches.values():
+        wanted[(match.match_id, match.source)] = None
+    for _, result in quiet:
+        wanted.setdefault((result.match_id, result.source), None)
     infos = await asyncio.gather(
-        *(request_match_info(mid, src) for mid, src in sources.items()),
+        *(request_match_info(mid, src) for mid, src in wanted),
         return_exceptions=True,
     )
-    info_map = dict(zip(sources, infos))
+    info_map = dict(zip(wanted, infos))
 
     changed = False
     for match in new_matches.values():
-        match.match_info = info_map.get(match.match_id)
+        match.match_info = info_map.get((match.match_id, match.source))
         if not match.has_valid_info():
             continue
         # 先记下群级已播报水位：即使本轮播报过程出问题，也不会在下一轮重播同一场。
@@ -793,6 +817,27 @@ async def poll_new_matches() -> None:
         if match.match_info.get("game_mode") in config.d2w_game_mode:
             continue
         await _report_match(match)
+
+    # 同群同场不再重复播报，但被跳过的玩家这一场的胜负仍要入账。
+    # 典型场景：隐藏战绩的玩家要攒够门控轮次才从小黑盒拿到 ID，等它拿到时，
+    # 同群的公开玩家早已把这一场播完；若直接把结果丢掉，他的连胜/连败就漏了
+    # 这一场，之后每一场都会跟着错位。这里只推进水位、累加纪录，不发消息。
+    for player, result in quiet:
+        info = info_map.get((result.match_id, result.source))
+        if not isinstance(info, dict) or "radiant_win" not in info:
+            continue
+        player.last_DOTA2_match_ID = result.match_id
+        if result.source == SOURCE_XIAOHEIHE:
+            player.last_xiaoheihe_match_id = result.match_id
+        changed = True
+        # 与播报链路保持一致：自定义/活动等模式既不出战报，也不计入连胜/连败
+        if info.get("game_mode") in config.d2w_game_mode:
+            continue
+        update_streak(
+            player,
+            _player_win(info, player.short_steamID),
+            int(info.get("match_id") or result.match_id or 0),
+        )
 
     if changed or hidden_changed:
         store.save()

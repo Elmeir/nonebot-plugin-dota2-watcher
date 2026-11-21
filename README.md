@@ -91,8 +91,8 @@ nonebot.run()
 | `D2W_HIDDEN_FALLBACK_THRESHOLD` | 连续「战绩被隐藏」多少次后才回退小黑盒（每次回退尝试后计数归零，用于控制访问频率、规避风控） | `10` |
 | **缓存**                        |                                                                              |            |
 | `D2W_CACHE_EXPIRE_SECONDS`     | D2PT / 玩家数据缓存时长（秒）                                                           | `10800`    |
-| `D2W_CORE_BUILD_CACHE_SECONDS` | 核心出装数据缓存时长（秒）                                                                | `259200`   |
-| `D2W_CORE_BUILD_IMAGE_CACHE_SECONDS` | 核心出装生成图片缓存时长（秒）                                                   | `86400`    |
+| `D2W_CORE_BUILD_CACHE_SECONDS` | 核心出装数据缓存时长（秒）                                                                | `86400`    |
+| `D2W_CORE_BUILD_IMAGE_CACHE_SECONDS` | 核心出装生成图片缓存时长（秒）                                                   | `43200`    |
 | `D2W_XIAOHEIHE_CACHE_SECONDS`  | `/战绩` 数据与生成图片的缓存时长（秒）；战绩时效性强，默认 1 小时                            | `3600`     |
 
 > 运行期数据与缓存目录由 [nonebot-plugin-localstore](https://github.com/nonebot/plugin-localstore) 统一管理，默认写入系统用户数据目录；如需自定义，可设置 `LOCALSTORE_DATA_DIR` / `LOCALSTORE_CACHE_DIR`。

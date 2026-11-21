@@ -90,9 +90,9 @@ class Config(BaseModel):
     # ===================== 缓存 =====================
     # 数据缓存时长（秒）
     d2w_cache_expire_seconds: int = 10800  # D2PT 位置数据缓存（3 小时）
-    d2w_core_build_cache_seconds: int = 259200  # 核心出装数据缓存（72 小时）
+    d2w_core_build_cache_seconds: int = 86400  # 核心出装数据缓存（24 小时）
     # 生成图片缓存时长（秒）：在缓存期内复用已生成的图片，避免重复渲染
-    d2w_core_build_image_cache_seconds: int = 86400  # 生成图片缓存（24 小时 / 1 天）
+    d2w_core_build_image_cache_seconds: int = 43200  # 生成图片缓存（12 小时）
     # /战绩（小黑盒最近战绩）数据与生成图片的缓存时长：战绩时效性强，默认 1 小时
     d2w_xiaoheihe_cache_seconds: int = 3600
 

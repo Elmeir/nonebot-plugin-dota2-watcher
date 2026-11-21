@@ -52,9 +52,9 @@ TALENTS_CN_FILE = _cfg.DATA_DIR / "talents_cn.json"
 ITEMS_FILE = _cfg.DATA_DIR / "items.json"
 DATA_URL = _cfg.D2PT_CORE_BUILD_URL
 TALENTS_CN_URL = _cfg.D2PT_TALENTS_CN_URL
-DATA_CACHE_SECONDS = _cfg.config.d2w_core_build_cache_seconds  # 72 小时
+DATA_CACHE_SECONDS = _cfg.config.d2w_core_build_cache_seconds  # 24 小时
 # 生成图片缓存时长（秒）：在缓存期内复用已生成的图片，避免重复渲染
-IMAGE_CACHE_SECONDS = _cfg.config.d2w_core_build_image_cache_seconds  # 24 小时 / 1 天
+IMAGE_CACHE_SECONDS = _cfg.config.d2w_core_build_image_cache_seconds  # 12 小时
 
 # 技能图片 CDN（加点图标）
 ABILITY_IMAGE_URL = _cfg.ABILITY_IMAGE_URL
@@ -175,8 +175,9 @@ def generate_abilities():
 
 
 async def ensure_data_file():
-    """检查 d2pt_core_build.json 是否存在或超过 72 小时，需要时从远程下载。
-    同时同步更新天赋中文名文件 talents_cn.json，并确保技能映射 abilities.json 存在。
+    """检查 d2pt_core_build.json 是否缺失、损坏或超过缓存时长，需要时从远程下载。
+    同时同步更新天赋中文名文件 talents_cn.json（缺失时也会单独补拉），并确保技能映射
+    abilities.json 存在。
 
     网络下载用原生异步 async_download_bytes，不阻塞事件循环；
     本地文件读取/生成仍保持同步（快且无 I/O 等待）。
@@ -185,10 +186,15 @@ async def ensure_data_file():
     need_download = False
     if not os.path.exists(DATA_FILE):
         need_download = True
-    else:
-        mtime = os.path.getmtime(DATA_FILE)
-        if time.time() - mtime > DATA_CACHE_SECONDS:
-            need_download = True
+    elif not load_data_file():
+        # 文件损坏或内容为空（如下载中断）：按缺失处理，避免缓存期内一直使用坏数据
+        print(f"警告: 数据文件损坏或为空，将重新下载: {DATA_FILE}", file=sys.stderr)
+        need_download = True
+    elif time.time() - os.path.getmtime(DATA_FILE) > DATA_CACHE_SECONDS:
+        need_download = True
+
+    # 主数据到期刷新时同步更新天赋中文名；主数据未到期但文件缺失时也单独补拉
+    need_talents = need_download or not os.path.exists(TALENTS_CN_FILE)
 
     if need_download:
         print(f"正在更新数据文件: {DATA_URL}")
@@ -197,7 +203,7 @@ async def ensure_data_file():
         elif not os.path.exists(DATA_FILE):
             print(f"错误: 本地数据文件 {DATA_FILE} 不存在", file=sys.stderr)
 
-        # 与主数据同步更新天赋中文名
+    if need_talents:
         print(f"正在同步更新天赋中文名: {TALENTS_CN_URL}")
         if await _download_to(TALENTS_CN_URL, TALENTS_CN_FILE):
             print(f"天赋中文名已更新: {TALENTS_CN_FILE}")
@@ -207,8 +213,8 @@ async def ensure_data_file():
     # 刷新天赋中文名映射（首次运行或更新后，导入时加载的空 dict 需重新读取）
     TALENTS_CN = loadjson(TALENTS_CN_FILE)
 
-    # 确保技能映射存在：仅在 abilities.json 缺失时，用 npc_ability_ids.txt 本地生成（不从仓库拉取）
-    if not os.path.exists(ABILITIES_FILE):
+    # 确保技能映射存在：abilities.json 缺失或损坏时，用 npc_ability_ids.txt 本地生成（不从仓库拉取）
+    if not os.path.exists(ABILITIES_FILE) or not loadjson(ABILITIES_FILE):
         if not os.path.exists(NPC_ABILITY_IDS_FILE):
             await _download_sources(NPC_ABILITY_IDS_URLS, NPC_ABILITY_IDS_FILE)
         if os.path.exists(NPC_ABILITY_IDS_FILE):
@@ -282,9 +288,13 @@ def find_hero(data, hero_query):
 # HTML 构建 —— 直接照抄 div 结构与 Tailwind 类对应的 CSS
 # ============================================================
 def load_items_from_json():
-    """从 items.json 加载物品 ID -> 名称映射（文件缺失时静默返回空）。"""
+    """从 items.json 加载物品 ID -> 名称映射（文件缺失或格式异常时静默返回空）。"""
     data = loadjson(ITEMS_FILE)
-    return {int(k): v for k, v in data.items()}
+    try:
+        return {int(k): v for k, v in data.items()}
+    except (AttributeError, TypeError, ValueError):
+        # 文件不是预期的 {id: name} 格式（如残留的 OpenDota 原始响应）：当作缺失处理
+        return {}
 
 
 async def ensure_items_cache():
@@ -330,7 +340,7 @@ TALENTS_CN = loadjson(TALENTS_CN_FILE)
 # 主数据（d2pt_core_build.json）进程内缓存
 # ============================================================
 # 文件约 635KB，JSON 解析一次约 11ms；每次生成图都重新解析纯属浪费。
-# 缓存键为 (mtime, size)，数据文件被更新（72 小时刷新）后自动失效。
+# 缓存键为 (mtime, size)，数据文件被更新（24 小时刷新）后自动失效。
 _data_file_cache: dict = {"stamp": None, "value": None}
 
 
@@ -1205,7 +1215,7 @@ async def generate_image(
         # 文件名带上风格，避免切换 d2w_image_theme 后仍命中另一风格的旧缓存图
         output_path = os.path.join(OUTPUT_DIR, f"{safe_hero}_{safe_pos}_{theme}.png")
 
-    # 图片缓存：缓存期内（默认 24 小时 / 1 天）复用已生成的图片，避免重复渲染
+    # 图片缓存：缓存期内（默认 12 小时）复用已生成的图片，避免重复渲染
     if (
         os.path.exists(output_path)
         and time.time() - os.path.getmtime(output_path) <= IMAGE_CACHE_SECONDS

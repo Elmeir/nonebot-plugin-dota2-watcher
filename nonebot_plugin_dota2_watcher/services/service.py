@@ -26,7 +26,7 @@ from ..datasources.request_match import (
     request_news,
 )
 from ..datasources.xiaoheihe_overview import OverviewError
-from ..generators import core_build, hero_pool, match_builder
+from ..generators import core_build, d2pt_ranking, hero_pool, match_builder
 from ..generators import playmates as playmates_gen
 from ..generators import pro_peers as pro_peers_gen
 from ..generators import xiaoheihe_overview as xiaoheihe_gen
@@ -136,12 +136,17 @@ def subscription_status(group_id) -> str:
     return "\n".join(lines)
 
 
-async def d2pt_report(pos: str = "all") -> Message:
-    """D2PT 位置数据（文本）。相同位置的并发查询共享同一次执行。"""
+async def d2pt_report(theme: str | None = None, pos: str | None = None) -> Message:
+    """D2PT 排行图片。pos 为空时输出五列总览，否则输出该位置全部英雄。
+
+    theme 留空时使用配置项 d2w_image_theme（默认 light）。
+    """
+    theme = normalize_image_theme(theme)
+    pos_key = str(pos) if pos is not None else None
 
     async def _build() -> Message:
         try:
-            # 默认走 1 小时缓存，避免每次触发都重新拉取
+            # 默认走缓存，避免每次触发都重新拉取
             posdata = await d2pt.load_data(force_update=False)
         except Exception:
             logger.exception("d2pt 数据加载失败")
@@ -149,13 +154,16 @@ async def d2pt_report(pos: str = "all") -> Message:
         if not posdata:
             return Message("d2pt读取数据失败")
 
-        msg = d2pt.generate_message(posdata, pos)
-        if not msg:
+        try:
+            path = await d2pt_ranking.generate_image(posdata, theme=theme, pos=pos_key)
+        except Exception:
+            logger.exception("d2pt 排行图生成失败")
+            return Message("d2pt图片生成失败")
+        if not path:
             return Message("d2pt读取数据失败")
+        return Message(MessageSegment.image(file=path))
 
-        return Message(msg)
-
-    return await run_single_flight(("d2pt", pos), _build)
+    return await run_single_flight(("d2pt", pos_key, theme), _build)
 
 
 async def report_image(match_id: str) -> str:
@@ -364,7 +372,9 @@ def list_teams(group_id) -> str:
 
 async def add_cn_teams(group_id) -> str:
     """一键订阅全部中国战队（CN_TEAMS）；返回提示文案。"""
-    added = [team_roster.team_name(t) for t in team_roster.CN_TEAMS if store.add_team(str(group_id), t)]
+    added = [
+        team_roster.team_name(t) for t in team_roster.CN_TEAMS if store.add_team(str(group_id), t)
+    ]
     if added:
         store.save()
         return (
@@ -668,11 +678,7 @@ async def poll_news() -> None:
     except Exception:
         logger.exception("获取 DOTA2 新闻失败")
         return
-    events = [
-        e
-        for e in ((news or {}).get("events") or [])
-        if e.get("gid") and e.get("event_name")
-    ]
+    events = [e for e in ((news or {}).get("events") or []) if e.get("gid") and e.get("event_name")]
     if not events:
         return
 

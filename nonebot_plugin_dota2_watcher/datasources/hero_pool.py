@@ -293,11 +293,11 @@ def pos_distribution(matches: list[dict]) -> list[tuple[str | int, int]]:
 # 英雄 / 玩家头像：统一走 assets（目录、下载与内存缓存均由 assets 管理）
 # ============================================================
 async def load_icon_img(short: str):
-    """下载（并缓存）英雄头像为 Pillow RGBA 图；失败返回 None（供 PNG 渲染用）。
+    """加载裁边居中后的 32×32 英雄头像为 Pillow RGBA 图；失败返回 None（供 PNG 渲染用）。
 
-    头像落盘到 assets.ICON_IMAGES_DIR，内存缓存也在 assets 内，跨模块共用同一份。
+    图标由 assets 统一处理并缓存，跨模块共用同一份居中版本。
     """
-    return await assets.load_hero_icon(short)
+    return await assets.load_hero_icon_32(short)
 
 
 async def load_avatar_img(url: str):

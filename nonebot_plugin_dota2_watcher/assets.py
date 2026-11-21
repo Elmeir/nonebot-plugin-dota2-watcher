@@ -9,7 +9,7 @@
     hero/       英雄宽幅图 ``hero_<short>.png``（战报 / 战绩图）
     item/       物品图标 ``item_<name>.png``
     abilities/  技能图标 ``<ability>.png``
-    icons/      英雄小头像 ``<short>_stratz.webp``（Stratz CDN）
+    icons/      英雄小头像 ``<short>_stratz.webp``（Stratz CDN）与 ``<short>_stratz_32_v3.png``（裁边居中后）
     avatars/    玩家 steam 头像 ``avatar_<url md5>.png``（按 URL 复用，跨数据源）
     logo/       战队 logo ``<team_id>.png``（TI 战报）
     rank/       段位徽章 ``rank_<url md5>.png``（小黑盒下发的段位原图）
@@ -117,6 +117,15 @@ def item_image_path(filename: str) -> str:
 def hero_icon_path(short: str) -> Path:
     """英雄小头像路径（icons/<short>_stratz.webp）。"""
     return ICON_IMAGES_DIR / f"{short}_stratz.webp"
+
+
+ICON32_SIZE = 32  # 居中图标的画布尺寸
+ICON32_VERSION = "v3"  # 处理算法升级时递增，使旧缓存失效
+
+
+def hero_icon_32_path(short: str) -> Path:
+    """居中处理后的英雄图标路径（icons/<short>_stratz_32_v3.png）。"""
+    return ICON_IMAGES_DIR / f"{short}_stratz_32_{ICON32_VERSION}.png"
 
 
 def avatar_path(url: str) -> Path:
@@ -311,6 +320,65 @@ async def load_hero_icon(short: str):
     return img
 
 
+def _center_icon(img, size: int = ICON32_SIZE):
+    """裁掉透明边后按原像素尺寸居中贴到 size×size 透明画布上（不缩放）。"""
+    from PIL import Image
+
+    if img.mode != "RGBA":
+        img = img.convert("RGBA")
+    # 只按 alpha 包围盒裁掉四周透明像素，保留内容原始像素尺寸
+    bbox = img.getchannel("A").getbbox()
+    if bbox:
+        img = img.crop(bbox)
+    canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    canvas.paste(img, ((size - img.width) // 2, (size - img.height) // 2), img)
+    return canvas
+
+
+async def ensure_hero_icon_32(short: str) -> str:
+    """确保英雄图标已裁边并居中缓存为 32×32 PNG，返回本地路径；失败返回空串。
+
+    处理顺序：按 alpha 包围盒去掉原有透明像素 -> 保持原像素尺寸居中贴到
+    32×32 透明画布，只在四周补齐对称的透明像素，不缩放图标内容。
+    """
+    if not short:
+        return ""
+    path = hero_icon_32_path(short)
+    if path.exists() and path.stat().st_size > 0:
+        return str(path)
+    img = await load_hero_icon(short)
+    if img is None:
+        return ""
+    icon = _center_icon(img, ICON32_SIZE)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    icon.save(path, format="PNG")
+    return str(path)
+
+
+# 裁边居中后的 32×32 英雄图标内存缓存：short -> RGBA
+_icon32_mem_cache: dict[str, object] = {}
+
+
+async def load_hero_icon_32(short: str):
+    """加载裁边居中后的 32×32 英雄图标为 RGBA 图；失败返回 None。
+
+    统一供 /d2pt、/英雄池、/战绩 等使用，避免各处直接拿到带不对称透明边的原图。
+    """
+    if not short:
+        return None
+    if short in _icon32_mem_cache:
+        return _icon32_mem_cache[short]
+    path = await ensure_hero_icon_32(short)
+    if not path:
+        return None
+    img = open_image(path)
+    if img is None:
+        logger.warning(f"居中英雄图标读取失败（{short}）")
+        return None
+    _icon32_mem_cache[short] = img
+    return img
+
+
 # 玩家头像内存缓存：URL -> RGBA
 _avatar_mem_cache: dict[str, object] = {}
 
@@ -469,5 +537,6 @@ def clear_memory_caches() -> None:
     _IMAGE_CACHE.clear()
     _SCALED_CACHE.clear()
     _icon_mem_cache.clear()
+    _icon32_mem_cache.clear()
     _avatar_mem_cache.clear()
     _rank_badge_uri_cache.clear()

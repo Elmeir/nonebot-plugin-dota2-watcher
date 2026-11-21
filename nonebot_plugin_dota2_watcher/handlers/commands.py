@@ -34,12 +34,8 @@ delete_player_cmd = on_command(
     block=True,
     permission=GROUP_ADMIN | GROUP_OWNER | SUPERUSER,
 )
-close_broadcast_cmd = on_regex(
-    r"关闭(\S+)的群播报", rule=_group_rule, priority=10, block=True
-)
-open_broadcast_cmd = on_regex(
-    r"开启(\S+)的群播报", rule=_group_rule, priority=10, block=True
-)
+close_broadcast_cmd = on_regex(r"关闭(\S+)的群播报", rule=_group_rule, priority=10, block=True)
+open_broadcast_cmd = on_regex(r"开启(\S+)的群播报", rule=_group_rule, priority=10, block=True)
 d2pt_cmd = on_command("d2pt", aliases={"D2PT"}, rule=_group_rule, priority=10, block=True)
 report_cmd = on_command("战报", rule=_group_rule, priority=10, block=True)
 build_cmd = on_command("出装", rule=_group_rule, priority=10, block=True)
@@ -139,15 +135,33 @@ async def handle_open_broadcast(matcher: Matcher, event: GroupMessageEvent):
 # ---------------------------------------------------------------
 # /d2pt
 # ---------------------------------------------------------------
+_D2PT_HINT = "请输入：/d2pt、/d2pt [位置1-5]、/d2pt [dark|light] 或 /d2pt [位置1-5] [dark|light]"
+
+
 @d2pt_cmd.handle()
 async def handle_d2pt(event: GroupMessageEvent):
     args = _args(event)
-    if len(args) > 1:
-        await d2pt_cmd.finish("请输入：/d2pt 或 /d2pt [位置(数字)]")
-    pos = args[0] if args else "all"
-    if pos != "all" and pos not in "12345":
-        await d2pt_cmd.finish("请输入：/d2pt 或 /d2pt [位置(数字)]")
-    await d2pt_cmd.finish(await service.d2pt_report(pos))
+    if len(args) > 2:
+        await d2pt_cmd.finish(_D2PT_HINT)
+
+    pos = None
+    theme = None
+    if args:
+        first = args[0].strip().lower()
+        if first in {"1", "2", "3", "4", "5"}:
+            pos = first
+            if len(args) == 2:
+                theme = args[1].strip().lower()
+                if theme not in ("dark", "light"):
+                    await d2pt_cmd.finish("风格参数无效，请输入 dark 或 light")
+        elif first in ("dark", "light"):
+            if len(args) == 2:
+                await d2pt_cmd.finish(_D2PT_HINT)
+            theme = first
+        else:
+            await d2pt_cmd.finish(_D2PT_HINT)
+
+    await d2pt_cmd.finish(await service.d2pt_report(theme=theme, pos=pos))
 
 
 # ---------------------------------------------------------------
@@ -306,9 +320,7 @@ async def handle_overview(event: GroupMessageEvent):
 async def handle_add_team(event: GroupMessageEvent):
     args = _args(event)
     if len(args) != 1:
-        await add_team_cmd.finish(
-            "请输入：/添加刀塔战队 [队名或 team_id]\n如：/添加刀塔战队 XG"
-        )
+        await add_team_cmd.finish("请输入：/添加刀塔战队 [队名或 team_id]\n如：/添加刀塔战队 XG")
     await add_team_cmd.finish(await service.add_team(event.group_id, args[0]))
 
 
@@ -379,7 +391,8 @@ _HELP_TEXT = (
     "/查看刀塔玩家：列出本群订阅玩家\n"
     "/删除刀塔玩家 [昵称]：删除指定玩家（管理员以上）\n"
     "开启/关闭[昵称]的群播报：控制某玩家（或“全体”）播报\n"
-    "/d2pt [位置1-5]：D2PT 各位置胜率/线优数据\n"
+    "/d2pt：D2PT 五位置总览图片（每列前 15）\n"
+    "/d2pt [位置1-5] [dark|light]：该位置全部英雄排行图片\n"
     "/战报 [比赛编号]：生成开黑战报图片\n"
     "/出装 [英雄名] [位置1-5] [dark|light]：核心出装图\n"
     "/ti [小组赛|正赛]：TI 赛事战报图片（默认最新阶段）\n"

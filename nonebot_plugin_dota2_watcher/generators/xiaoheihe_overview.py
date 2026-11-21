@@ -185,8 +185,8 @@ async def _wide_uri(short: str) -> tuple[str, str]:
 
 
 async def _small_uri(short: str) -> tuple[str, str]:
-    """英雄小头像 -> data URI（缺失时自动下载，失败返回空串）。"""
-    img = await assets.load_hero_icon(short)
+    """英雄小头像 -> data URI（使用裁边居中后的 32×32 图标，失败返回空串）。"""
+    img = await assets.load_hero_icon_32(short)
     return short, assets.pil_to_data_uri(img) if img is not None else ""
 
 

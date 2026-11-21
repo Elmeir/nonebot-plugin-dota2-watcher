@@ -1,4 +1,4 @@
-"""D2PT 位置数据：抓取、缓存、解析与格式化。"""
+"""D2PT 位置数据：抓取、缓存与解析。"""
 
 from typing import Any
 
@@ -59,6 +59,7 @@ def parse_data_pos(pos: int, data: list) -> list:
                 {
                     "id": hero_id,
                     "name": hero_name_cn,
+                    "npc": h.get("npc", ""),  # 英雄短名（排行图图标用）
                     "WR": f"{win_rate:.1%}",
                     "lane": f"{lane:.1%}",
                     "lane_score": f"{lane_score:.1%}",
@@ -92,28 +93,3 @@ async def load_data(force_update: bool = False) -> dict | None:
         force_update=force_update,
         warn=lambda: logger.warning("D2PT 远程数据拉取失败，回退使用本地缓存"),
     )
-
-
-def generate_message(data: dict, pos: str = "all") -> str:
-    """格式化输出指定位置（或全部）的英雄数据。"""
-    full_space = chr(12288)
-    lines = []
-
-    def _header(title: str) -> str:
-        return f"{title:{full_space}<6}{'  胜率':<10}{'线优'}"
-
-    def _row(item: dict) -> str:
-        if "-" in item["lane"]:
-            return f"{item['name']:{full_space}<6}{item['WR']:<7}{item['lane']}"
-        return f"{item['name']:{full_space}<6}{item['WR']:<8}{item['lane']}"
-
-    if pos == "all":
-        for p in (1, 2, 3, 4, 5):
-            lines.append(_header(f"{p}号位"))
-            lines.extend(_row(item) for item in data.get(str(p), [])[:5])
-            lines.append("")
-    elif str(pos) in ("1", "2", "3", "4", "5"):
-        lines.append(_header(f"{pos}号位"))
-        lines.extend(_row(item) for item in data.get(str(pos), [])[:15])
-
-    return "\n".join(lines).rstrip("\n")

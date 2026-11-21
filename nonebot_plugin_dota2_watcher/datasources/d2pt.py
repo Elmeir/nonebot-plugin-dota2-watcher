@@ -38,6 +38,11 @@ def parse_data_pos(pos: int, data: list) -> list:
     if not data:
         return []
     matches_filter = max(h.get("matches", 0) for h in data) / 10
+    # updated_at 通常只在位置数据中的一条记录上，取出后统一带给该位置所有英雄
+    updated_at = next(
+        (str(h.get("updated_at")) for h in data if h.get("updated_at")),
+        "",
+    )
 
     result = []
     for h in data:
@@ -60,6 +65,7 @@ def parse_data_pos(pos: int, data: list) -> list:
                     "id": hero_id,
                     "name": hero_name_cn,
                     "npc": h.get("npc", ""),  # 英雄短名（排行图图标用）
+                    "updated_at": updated_at,
                     "WR": f"{win_rate:.1%}",
                     "lane": f"{lane:.1%}",
                     "lane_score": f"{lane_score:.1%}",
@@ -83,13 +89,30 @@ async def parse_data(force_update: bool = False) -> dict:
     return pos_all
 
 
+def _has_updated_at(data: dict) -> bool:
+    """解析缓存是否已带 updated_at（旧版缓存缺失时需要重新解析一次）。"""
+    return any(
+        item.get("updated_at")
+        for items in data.values()
+        if isinstance(items, list)
+        for item in items
+    )
+
+
 async def load_data(force_update: bool = False) -> dict | None:
     """读取合并后的全位置数据；d2pt_data.json 缓存过期或缺失时重新解析。
     远程拉取失败时回退使用本地缓存（即使已过期）。"""
-    return await cache_with_fallback(
+    data = await cache_with_fallback(
         POS_DATA_FILE,
         lambda: parse_data(force_update),
         CACHE_EXPIRE_SECONDS,
         force_update=force_update,
         warn=lambda: logger.warning("D2PT 远程数据拉取失败，回退使用本地缓存"),
     )
+    if data and not _has_updated_at(data):
+        # 旧版解析缓存不含 updated_at：用本地原始缓存重新解析一次，避免时间戳空白
+        try:
+            data = await parse_data(force_update=False)
+        except Exception:
+            logger.warning("D2PT 旧缓存缺少 updated_at，重新解析失败，继续使用旧缓存")
+    return data

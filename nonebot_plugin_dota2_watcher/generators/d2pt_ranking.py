@@ -172,10 +172,25 @@ def _column_html(
     icons: dict[str, str],
     short_map: dict[int, str],
 ) -> str:
-    """单个位置列：图标 + 列名 + 英雄行。"""
+    """单个位置列：图标 + 列名 + 数据更新时间 + 英雄行。"""
     accent = ICON_THEMES[theme_name]["position_colors"][pos]
     lane_colors = LANE_COLORS[theme_name]
     heroes = items[:row_count]
+    updated_at = next(
+        (str(item.get("updated_at")) for item in items if item.get("updated_at")),
+        "",
+    )
+    date_part, _, time_part = updated_at.partition(" ")
+    updated_html = (
+        '<div style="margin-left:auto;text-align:right;line-height:1.15;'
+        f"font-size:0.55rem;color:{theme['desc_color']};"
+        'font-variant-numeric:tabular-nums;white-space:nowrap;">'
+        f"<div>{_esc(date_part)}</div>"
+        + (f"<div>{_esc(time_part)}</div>" if time_part else "")
+        + "</div>"
+        if updated_at
+        else ""
+    )
     rows = "".join(
         _row_html(
             item,
@@ -194,8 +209,10 @@ def _column_html(
         '<div style="display:flex;align-items:center;gap:0.25rem;'
         f'padding:0.3rem;border-bottom:0.05rem solid {theme["card_border"]};">'
         f"{_position_icon_svg(pos, theme_name)}"
-        f'<span style="font-size:0.84rem;font-weight:600;color:{theme["title_color"]};">'
+        f'<span style="font-size:0.84rem;font-weight:600;color:{theme["title_color"]};'
+        'white-space:nowrap;">'
         f"{POSITIONS[pos]}</span>"
+        f"{updated_html}"
         "</div>"
         f"{rows}"
         "</div>"
@@ -268,6 +285,16 @@ def build_position_html(
         for item in items
     )
     icon = _position_icon_svg(pos, theme_name, size="1.2rem")
+    updated_at = next(
+        (str(item.get("updated_at")) for item in items if item.get("updated_at")),
+        "",
+    )
+    meta_html = (
+        '<span style="margin-left: auto; font-size: 0.6rem; '
+        f'color: {theme["desc_color"]};">{_esc(updated_at)}</span>'
+        if updated_at
+        else ""
+    )
     return f"""<!DOCTYPE html>
 <html>
 <head>
@@ -289,9 +316,7 @@ def build_position_html(
     <span style="font-size: 1.05rem; font-weight: 600; color: {theme["title_color"]};">
       {POSITIONS[pos]}
     </span>
-    <span style="margin-left: auto; font-size: 0.6rem; color: {theme["desc_color"]};">
-      全部 {len(items)} 位英雄
-    </span>
+    {meta_html}
   </div>
   <div style="display: grid; grid-template-columns: repeat({SINGLE_COLUMNS}, minmax(0, 1fr));
        gap: 0.25rem;">

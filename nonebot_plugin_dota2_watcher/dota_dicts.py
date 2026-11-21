@@ -162,7 +162,7 @@ HERO_MEMES: dict[int, dict[str, list[str]]] = {
         "win": [],
         "lose": [
             "{name}又斩莲花咯",
-            "{name}剑心犹在，明年再来",
+            "{name}剑心犹在，下把再来",
         ],
     },
     11: {  # 影魔
@@ -388,7 +388,6 @@ HERO_MEMES: dict[int, dict[str, list[str]]] = {
     44: {  # 幻影刺客
         "win": [],
         "lose": [
-            "{name}就这么喜欢玩下水道PA吗",
         ],
     },
     45: {  # 帕格纳

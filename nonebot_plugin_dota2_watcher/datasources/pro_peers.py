@@ -1,28 +1,9 @@
-"""Stratz 职业选手对战记录数据源：单次 GraphQL 聚合查询玩家与职业选手的队友/对手记录。
+"""Stratz 职业选手对战记录：队友 / 对手聚合，OpenDota 补全。
 
-接口：https://api.stratz.com/graphql（GraphQL 端点），使用 Bearer Token 鉴权。
-Token 配置：config.json 的 d2w_stratz_token，或环境变量 D2W_STRATZ_TOKEN / STRATZ_TOKEN。
-
-查询走 stratz.page.player.peers（STRATZ 网站专用聚合字段，API Token 亦可访问）：
-一次请求同时返回队友（peers）与对手（peersAgainst）两组完整列表，
-每条含 matchCount / lastMatchDateTime / steamAccount.proSteamAccount（职业身份与当前战队），
-服务端已完成全量历史聚合，无需本地翻页拉取比赛。
-
-职业校验：STRATZ 的 proSteamAccount 标记较宽泛（社区比赛选手也会被标记为 PRO），
-因此聚合结果还需经 Liquipedia Dota2 wiki 交叉校验 —— 批量查询 MediaWiki API，
-页面存在选手页（Infobox player）且 Steam ID 与选手账号一致才确认；
-校验通过的缓存不限时，未通过的缓存 1 个月后重查（选手日后可能被收录）。
-选手名与战队名均由 STRATZ 直接提供（team.name 优先，其次 team.tag）。
-
-双源互补：OpenDota 的 /players/{id}/pros 端点提供另一份职业选手对战聚合
-（含队友/对手场次与上次同场时间，名单与 STRATZ 各有覆盖），两份结果按
-proSteamAccount.id（= OpenDota account_id，选手实际账号 ID）归并互补。
-
-每次调用先尝试抓取 API；抓取成功按 steam 账号缓存到 data/pro_peers/，
-抓取失败（网络/限流）才回退本地缓存（缓存不设时间限制）。
-
-上次共同对局的比赛 ID 单独缓存（last_match_ids_{id}.json，按查询账号一份）：
-选手的上次同局时间没变即视为 ID 仍有效，直接读缓存不再向 STRATZ 发查询。
+peers 由服务端全量聚合；STRATZ 的 PRO 标记较宽泛，结果再经 Liquipedia
+交叉校验（选手页存在且 Steam ID 一致才确认，未通过的 1 个月后重查）。
+OpenDota /players/{id}/pros 提供另一份名单，按选手账号 ID 归并互补。
+按账号缓存到 data/pro_peers/；请求失败时回退旧缓存。
 """
 
 from __future__ import annotations
@@ -37,8 +18,8 @@ from nonebot.log import logger
 
 from ..config import DATA_DIR
 from ..utils import cache_with_fallback, get_json, load_cache
-from . import pro_names
-from .hero_pool import HeroPoolError, _graphql_post, _RateLimited, _token
+from . import cache, pro_names, stratz
+from .stratz_peers import PEERS_VARS_BASE, parse_peer_entry
 
 # 与 stratz.com peers 页面一致的聚合请求：一次 POST 同时取队友与对手两组全量列表
 QUERY = """
@@ -67,15 +48,6 @@ query GetPeers($steamId: Long!, $teammatesPeersRequest: PlayerTeammatesGroupByRe
 }
 """
 
-_PEERS_VARS_BASE = {
-    "playerTeammateSort": "WITH",  # AGAINST 由对手组覆盖
-    "matchGroupOrderBy": "MATCH_COUNT",
-    "orderBy": "DESC",
-    "matchLimitMin": 1,
-    "skip": 0,
-    "take": 10000,  # 与 stratz.com 一致：单次拉全量
-}
-
 # 抓取结果缓存：按 steam 账号各存一份到 data/pro_peers/ 目录，缓存不设时间限制
 CACHE_DIR = DATA_DIR / "pro_peers"
 CACHE_VERSION = 7  # 缓存结构版本（stats 含玩家昵称与头像）；升级后旧缓存自动失效
@@ -97,7 +69,7 @@ OPENDOTA_PROS_URL = "https://api.opendota.com/api/players/{account_id}/pros"
 _OD_CACHE_VERSION = 1
 
 
-class ProPeersError(Exception):
+class ProPeersError(stratz.StratzError):
     """职业选手对战记录抓取失败（供上层转为用户提示）。"""
 
 
@@ -108,10 +80,8 @@ def _cache_path(steam_id) -> Path:
 
 def _load_cache(cache_path: Path, steam_id):
     """读取缓存；命中（结构/账号一致）即返回 (player_name, player_avatar, stats)，否则 None。"""
-    data = load_cache(cache_path)
-    if data is None or data.get("cache_version") != CACHE_VERSION:
-        return None
-    if data.get("steam_id") != int(steam_id):
+    data = cache.read(cache_path, CACHE_VERSION, steam_id)
+    if data is None:
         return None
     return (
         data.get("player_name") or "玩家",
@@ -123,35 +93,13 @@ def _load_cache(cache_path: Path, steam_id):
 def _save_cache(
     cache_path: Path, steam_id, player_name: str, player_avatar: str, stats: list[dict]
 ) -> None:
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    cache_path.write_text(
-        json.dumps(
-            {
-                "cache_version": CACHE_VERSION,
-                "steam_id": int(steam_id),
-                "fetched_at": time.time(),
-                "player_name": player_name,
-                "player_avatar": player_avatar,
-                "stats": stats,
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-
-
-def _parse_peer_entry(entry: dict) -> tuple[int, int, int, int] | None:
-    """解析一条 peers 记录为 (steam_id, match_count, win_count, last_ts)；无效返回 None。"""
-    account = entry.get("steamAccount") or {}
-    steam_id = account.get("id")
-    if not steam_id:
-        return None
-    return (
-        int(steam_id),
-        int(entry.get("matchCount") or 0),
-        int(entry.get("winCount") or 0),
-        int(entry.get("lastMatchDateTime") or 0),
+    cache.write(
+        cache_path,
+        CACHE_VERSION,
+        steam_id,
+        player_name=player_name,
+        player_avatar=player_avatar,
+        stats=stats,
     )
 
 
@@ -171,7 +119,7 @@ def _merge_peer_groups(payload: dict, steam_id: int) -> list[dict]:
     merged: dict[int, dict] = {}
     for key, group in (("with", "peers"), ("against", "peersAgainst")):
         for entry in page_player.get(group) or []:
-            parsed = _parse_peer_entry(entry)
+            parsed = parse_peer_entry(entry)
             if parsed is None:
                 continue
             pid, count, win, last = parsed
@@ -223,33 +171,21 @@ async def fetch_pro_peers(steam_id):
     """
     steam_id = int(steam_id)
     cache_path = _cache_path(steam_id)
-    try:
-        token = _token()
-    except HeroPoolError as e:
-        raise ProPeersError(str(e)) from e
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-        "User-Agent": "stratz-pro-peers/0.1",
-    }
+    token = stratz.token(ProPeersError)
     variables = {
         "steamId": steam_id,
-        "take": _PEERS_VARS_BASE["take"],
-        "teammatesPeersRequest": {**_PEERS_VARS_BASE},
-        "teammatesPeersAgainstRequest": {**_PEERS_VARS_BASE, "playerTeammateSort": "AGAINST"},
+        "take": PEERS_VARS_BASE["take"],
+        "teammatesPeersRequest": {**PEERS_VARS_BASE},
+        "teammatesPeersAgainstRequest": {**PEERS_VARS_BASE, "playerTeammateSort": "AGAINST"},
     }
 
     async def _fetch():
-        # 单次 POST 聚合查询；对限流(429/503)做退避重试
-        for attempt in range(4):
-            try:
-                payload = await _graphql_post(QUERY, variables, headers)
-                break
-            except _RateLimited:
-                if attempt < 3:
-                    await asyncio.sleep(15 * (attempt + 1))
-                    continue
-                raise
+        payload = await stratz.query(
+            QUERY,
+            variables,
+            bearer=token,
+            user_agent="stratz-pro-peers/0.1",
+        )
         if payload.get("errors"):
             raise ProPeersError(f"Stratz GraphQL 返回错误：{payload['errors']}")
         account = (((payload.get("data") or {}).get("player") or {}).get("steamAccount")) or {}

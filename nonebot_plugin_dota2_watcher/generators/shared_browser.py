@@ -1,36 +1,12 @@
-"""共享浏览器实例管理模块。
+"""进程内共享的 Playwright Chromium 实例。
 
-供多个脚本在同一个进程内复用同一个 chromium 浏览器，避免重复启动。
+浏览器绑定创建它的 event loop，跨事件循环会自动重建（旧实例由 atexit 清理）。
+按 device_scale_factor 缓存 context / page；同一 page 的渲染必须串行，
+因此用 rendering() 独占页面：
 
-关键约束：
-    playwright 的浏览器实例绑定创建它的 event loop，因此只有在
-    **同一个事件循环** 内多次调用才会复用同一浏览器；跨事件循环
-    （如多次 asyncio.run）会自动重建，旧实例由 atexit 统一清理。
-
-渲染上下文按 device_scale_factor 分组缓存（每个倍率一份 context + page）：
-    /出装、/开黑、/pro 用 supersample=2，/ti 用 1，两类渲染交替发生时不会
-    再互相顶掉对方、反复重建 context。同一 page 上的「set_content → 截图」
-    必须串行，否则两个并发生成会互相污染页面，因此对外提供 rendering()
-    上下文管理器，内部加锁后再交付页面。
-
-用法：
-    import shared_browser
-
-    async def main():
-        # 需要独占页面时用 rendering()
-        async with shared_browser.rendering(2) as page:
-            await page.set_content(html, wait_until="load")
-            png = await page.locator("#container").screenshot()
-
-    # 只想要一个可复用的浏览器实例（自己管理 page）
-    browser = await shared_browser.get_browser()
-
-    # 可选：手动关闭（程序退出时也会自动清理）
-    await shared_browser.close_browser()
-
-    # 或用上下文管理器自动清理
-    async with shared_browser.BrowserSession():
-        ...
+    async with shared_browser.rendering(2) as page:
+        await page.set_content(html, wait_until="load")
+        png = await page.locator("#container").screenshot()
 """
 
 import asyncio

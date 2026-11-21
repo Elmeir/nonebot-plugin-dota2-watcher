@@ -1,8 +1,4 @@
-"""命令处理器：玩家订阅 / 播报开关 / d2pt / 战报 / 出装 / ti。
-
-命令层只负责解析输入、调用 services 中的业务函数并返回结果，
-业务逻辑统一放在 services/service.py 中。
-"""
+"""群命令处理器：解析参数、调用 services 并回复。"""
 
 from nonebot import on_command, on_regex
 from nonebot.adapters.onebot.v11 import GroupMessageEvent, MessageSegment
@@ -80,6 +76,21 @@ def _optional_theme(args: list[str]) -> str | None:
     if theme not in ("dark", "light"):
         raise ValueError("风格参数无效，请输入 dark 或 light")
     return theme
+
+
+async def _finish_image_command(matcher, event: GroupMessageEvent, hint: str, failure: str, fetch):
+    """执行「[账号] [dark|light]」类图片命令：解析参数、出图并回复。"""
+    args = _args(event)
+    if not (1 <= len(args) <= 2):
+        await matcher.finish(hint)
+    try:
+        theme = _optional_theme(args)
+        path = await fetch(event.group_id, args[0], theme)
+    except ValueError as e:
+        await matcher.finish(str(e))
+    if path:
+        await matcher.finish(MessageSegment.image(file=path))
+    await matcher.finish(failure)
 
 
 # ---------------------------------------------------------------
@@ -253,20 +264,13 @@ async def handle_hero_pool(event: GroupMessageEvent):
 # ---------------------------------------------------------------
 @pro_cmd.handle()
 async def handle_pro(event: GroupMessageEvent):
-    args = _args(event)
-    if not (1 <= len(args) <= 2):
-        await pro_cmd.finish("请输入：/pro [steam_id 或 玩家昵称] [dark|light]")
-    try:
-        theme = _optional_theme(args)
-    except ValueError as e:
-        await pro_cmd.finish(str(e))
-    try:
-        path = await service.pro_image(event.group_id, args[0], theme)
-    except ValueError as e:
-        await pro_cmd.finish(str(e))
-    if path:
-        await pro_cmd.finish(MessageSegment.image(file=path))
-    await pro_cmd.finish("职业选手对战记录生成失败")
+    await _finish_image_command(
+        pro_cmd,
+        event,
+        "请输入：/pro [steam_id 或 玩家昵称] [dark|light]",
+        "职业选手对战记录生成失败",
+        service.pro_image,
+    )
 
 
 # ---------------------------------------------------------------
@@ -274,20 +278,13 @@ async def handle_pro(event: GroupMessageEvent):
 # ---------------------------------------------------------------
 @playmates_cmd.handle()
 async def handle_playmates(event: GroupMessageEvent):
-    args = _args(event)
-    if not (1 <= len(args) <= 2):
-        await playmates_cmd.finish("请输入：/开黑 [steam_id 或 玩家昵称] [dark|light]")
-    try:
-        theme = _optional_theme(args)
-    except ValueError as e:
-        await playmates_cmd.finish(str(e))
-    try:
-        path = await service.playmates_image(event.group_id, args[0], theme)
-    except ValueError as e:
-        await playmates_cmd.finish(str(e))
-    if path:
-        await playmates_cmd.finish(MessageSegment.image(file=path))
-    await playmates_cmd.finish("开黑记录生成失败")
+    await _finish_image_command(
+        playmates_cmd,
+        event,
+        "请输入：/开黑 [steam_id 或 玩家昵称] [dark|light]",
+        "开黑记录生成失败",
+        service.playmates_image,
+    )
 
 
 # ---------------------------------------------------------------
@@ -295,20 +292,13 @@ async def handle_playmates(event: GroupMessageEvent):
 # ---------------------------------------------------------------
 @overview_cmd.handle()
 async def handle_overview(event: GroupMessageEvent):
-    args = _args(event)
-    if not (1 <= len(args) <= 2):
-        await overview_cmd.finish("请输入：/战绩 [steam_id 或 玩家昵称] [dark|light]")
-    try:
-        theme = _optional_theme(args)
-    except ValueError as e:
-        await overview_cmd.finish(str(e))
-    try:
-        path = await service.xiaoheihe_overview_image(event.group_id, args[0], theme)
-    except ValueError as e:
-        await overview_cmd.finish(str(e))
-    if path:
-        await overview_cmd.finish(MessageSegment.image(file=path))
-    await overview_cmd.finish("战绩生成失败")
+    await _finish_image_command(
+        overview_cmd,
+        event,
+        "请输入：/战绩 [steam_id 或 玩家昵称] [dark|light]",
+        "战绩生成失败",
+        service.xiaoheihe_overview_image,
+    )
 
 
 # ---------------------------------------------------------------

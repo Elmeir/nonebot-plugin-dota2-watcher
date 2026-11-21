@@ -1,18 +1,8 @@
-"""Valve 战队登记名单数据源。
+"""Valve 战队登记名单（GetTeamInfoByTeamID，需要 Steam Web API Key）。
 
-接口：IDOTA2Match_570/GetTeamInfoByTeamID/v001（需 Steam Web API Key）
-
-实测要点（与官方文档有出入，务必注意）：
-  - 响应中**没有 team_id 字段**，只能用 name/tag/abbreviation 校验是否命中；
-  - start_at_team_id 是**游标**而非精确匹配：若该 team_id 不存在会返回下一支队伍；
-  - 每队返回 6~7 人（player_0..N_account_id），为「现役 + 替补/教练」，
-    Valve **不提供任何字段区分现役与替补**，因此不能当作"五人首发"使用；
-  - 名单会被维护（实测 Team Liquid 建队 13 年仅返回 7 人，2019 年离队的
-    MATUMBAMAN / Miracle- 已被移除），故可用于「加入 / 离开」变动检测；
-  - 存在跨队残留（同一 account_id 可能同时挂在两支队伍），"离开"事件可能滞后。
-
-显示名：优先用 pro_names 的职业名（Steam 昵称会随意更改，如 Ame 当前叫
-"NothingToGay"），查不到时用 GetPlayerSummaries 的昵称兜底。
+注意：响应没有 team_id，只能用 name/tag 校验；start_at_team_id 是游标；
+名单含替补 / 教练，且可能跨队残留，因此「离开」事件可能滞后。
+显示名优先用 pro_names 的职业名，查不到时用 Steam 昵称。
 """
 
 from __future__ import annotations
@@ -30,9 +20,7 @@ from ..config import (
 from ..utils import get_json, load_cache
 from . import pro_names
 
-# 已知战队表：TI2026（league_id=19719）参赛队 + 其它常用队伍，
-# 来源均为官方 GetLeagueData 的 team_standings / OpenDota 战队数据。
-# 仅用于「队名/缩写 -> team_id」的解析；表外队伍可直接给 team_id。
+# 已知战队表：TI2026 参赛队与常用队伍，仅用于把队名解析成 team_id
 KNOWN_TEAMS: dict[int, str] = {
     2163: "Team Liquid",
     726228: "Vici Gaming",

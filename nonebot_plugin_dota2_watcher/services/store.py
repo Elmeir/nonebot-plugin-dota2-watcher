@@ -1,16 +1,14 @@
 """玩家订阅数据的内存存储与 JSON 持久化。
 
-数据结构：
-    {group_id(str): {
-        "players": [Player, ...],
-        "teams": [team_id(int), ...],  # 订阅的战队（名单变动播报）
-        "subscribe_news": bool,  # 默认 True
-        "subscribe_ti": bool,    # 默认 True
-        "last_reported_match_id": int,  # 本群已播报到的比赛 ID（群维度去重）
+结构：
+    {group_id: {
+        "players": [Player],
+        "teams": [team_id],
+        "subscribe_news": bool,
+        "subscribe_ti": bool,
+        "last_reported_match_id": int,
     }}
-
-所有读写通过本模块提供的接口完成，内部使用锁保证线程安全，
-避免命令处理器与定时任务并发修改时发生竞态。
+读写均通过本模块，内部加锁，避免命令与定时任务并发修改。
 """
 
 import threading

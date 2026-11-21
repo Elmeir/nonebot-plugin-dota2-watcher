@@ -14,18 +14,16 @@ class Player:
     nickname: str = ""
     last_DOTA2_match_ID: int = 0
     display_recent_match: bool = True
-    # 连胜 / 连败纪录：每场战报按本局胜负就地累加（二者必有一个为 0）
+    # 连胜 / 连败：每场按胜负累加，二者只有一个非零
     win_streak: int = 0
     lose_streak: int = 0
-    # 已计入纪录的比赛 ID：同一玩家被多个群订阅时同一场会被处理多次，
-    # 用它保证一场只累加一次
+    # 已计入纪录的比赛 ID，保证同一场只累加一次
     streak_match_id: int = 0
-    # 连续「战绩被隐藏」次数：Steam 返回 status 15 时累加，Steam 恢复正常时归零。
-    # 达到阈值才回退小黑盒（见 services/match_history.py），用于控制小黑盒访问频率
+    # 连续「战绩被隐藏」次数；达到阈值才回退小黑盒（见 match_history）
     hidden_fail_count: int = 0
-    # 最近一次从小黑盒采纳的比赛 ID：小黑盒数据可能滞后，用它作为跨数据源判旧的基准
+    # 最近采纳的小黑盒比赛 ID，用于跨数据源判旧
     last_xiaoheihe_match_id: int = 0
-    # 最近一场比赛的对局数据（由 generate_message 填充）
+    # 本局对局数据（由 generate_message 填充）
     stats: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict:

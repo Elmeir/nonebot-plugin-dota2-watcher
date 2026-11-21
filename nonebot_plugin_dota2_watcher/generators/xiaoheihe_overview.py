@@ -1,38 +1,21 @@
-"""小黑盒「最近战绩」图片生成器（HTML + Playwright，风格同 /出装、/开黑）。
+"""小黑盒「最近战绩」图片（HTML + Playwright，风格同 /出装）。
 
-数据来源见 ``../datasources/xiaoheihe_overview.py``（小黑盒 overview 接口，
-免签名、只需 steam_id，数据与生成图各缓存 1 小时）。
-
-版式参考小黑盒玩家主页，但按机器人图片的可读性重排：顶部玩家卡 →
-近20场战绩条（胜负小方块）→ 比赛列表（结果/英雄/KDA/模式时长/对局段位）→
-常用英雄（英雄/胜率/场次/MMR排名/KDA）→ 生涯纪录（图标/数值/说明，4 列等分）。
-
-模块自下而上分层，改版式时按层定位：
-
-    常量/主题 → 素材预取 → 数据工具 → 视图组件 → 页面组装 → 渲染入口
-
-视图组件一律「输入原始 JSON + 已取好的素材、输出 HTML 字符串」，不读写全局
-状态、也不做网络请求；所有图片在 ``_prefetch_assets`` 里一次性并发取好，因此
-某个模块缺数据时整张卡片自然消失，不会拖慢或影响其它模块。
-
-样式复用 /出装（core_build.py）的主题与容器规范：同一套 FONT_FAMILY / THEME，
-外层 #container 宽度 28.125rem（超采样 2x 后 540px），胜/负沿用项目既有的
-绿色 / 红色，金色用于段位与 MMR 点缀。
+数据来源见 datasources/xiaoheihe_overview.py。
+结构：玩家卡 → 近20场胜负条 → 比赛列表 → 常用英雄 → 生涯纪录。
+素材在 _prefetch_assets 中一次性并发取好，缺数据的模块整块省略。
 """
 
 from __future__ import annotations
 
 import asyncio
-import io
 import os
-import time
 
 from nonebot.log import logger
 
 from .. import assets
 from ..config import OUTPUT_DIR, config, normalize_image_theme
 from ..datasources import xiaoheihe_overview as ds
-from . import shared_browser
+from . import html_render
 from .core_build import FONT_FAMILY, THEME_DARK, THEME_LIGHT, THEMES
 
 # 容器宽度：与项目其它出图一致（28.125rem = 540px）
@@ -52,10 +35,7 @@ NUMERIC = "font-variant-numeric: tabular-nums;"  # 数字等宽，列内不跳�
 ELLIPSIS = "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
 CARD_PADDING = "0.62rem 0.72rem"
 
-# 【Ta的比赛】各列宽度：表头与数据行共用这一份定义，避免两处各写一套导致错位。
-# 行内用 flex + space-between，剩余空间自动均分成列间距，不再让某一列吃掉全部余量。
-#   result 列 = 色条 + 间隙 + 文字，三者合成一个 flex 组，
-#   否则色条会被 space-between 甩到最左边，和「胜利/失败」之间空出一大块。
+# 【Ta的比赛】列宽：表头与数据行共用，避免错位；色条与结果文字合为一个 flex 组
 MATCH_COLS = {
     "bar": "0.16rem",  # 胜负色条
     "gap": "0.34rem",  # 色条与结果文字之间
@@ -908,9 +888,7 @@ def _hero_mmr(hero_mmr: dict, theme: dict) -> str:
     delta = _to_int(hero_mmr.get("delta"))
     delta_color = WIN_COLOR if delta >= 0 else LOSE_COLOR
     delta_text = f"{delta:+d}" if delta else ""  # 0 时不显示「+0」
-    # align-items: center 只对齐行盒；两处字号不同（0.8 / 0.54rem），
-    # 字形墨迹在各自行盒里的偏移随字号成比例变化，仅对齐盒子肉眼仍错位。
-    # 实测需把小的那个下移约 2px，这里用 translateY 补偿（随字号等比）。
+    # 两处字号不同，仅对齐行盒会错位，小字号下移约 2px 补偿
     html = (
         '<div style="display: flex; align-items: center; justify-content: flex-start; '
         'gap: 0.12rem;">'
@@ -942,9 +920,7 @@ def _hero_kda(hero: dict, theme: dict) -> str:
 
 def _hero_row(hero: dict, theme: dict, art: _Assets, *, is_last: bool) -> str:
     icon = art.hero_small(hero.get("hero_icon") or hero.get("hero_image") or "")
-    # 行间不画分隔线（理由同比赛列表），仅靠内边距分隔。
-    # 行高由 1.72rem 的头像撑起，上下内边距只决定「块与块之间的缝」，
-    # 所以这里压到 0.08rem——再大就会让 5 行英雄显得松散。
+    # 行间不画分隔线，仅用内边距分隔
     row_pad = "0.08rem 0.1rem 0" if is_last else "0.08rem 0.1rem"
     return (
         f'<div style="display: grid; {HERO_COLS} gap: 0.5rem; padding: {row_pad};">'
@@ -1115,9 +1091,7 @@ def build_html(data: dict, theme_name: str, art: _Assets) -> str:
     recent = modules.get("recent_match") or {}
     r20 = modules.get("r20_data_stats") or {}
 
-    # 「近20场最高」并入「近20场比赛」下方，不带标题，一行式。
-    # 只有在胜负方块存在时才并入，否则会渲染出一张只有统计行、没有标题的怪卡片。
-    # 上下之间只用留白分隔，不画横线（横线会把同一张卡片切成两块）。
+    # 「近20场最高」并入胜负条下方；没有胜负条时不渲染，避免孤立统计卡片
     strip = _recent_strip(recent, theme, art)
     best = _recent_best(r20, theme, art) if (r20 and strip) else ""
     best_html = f'<div style="margin-top: 0.45rem;">{best}</div>' if best else ""
@@ -1140,26 +1114,11 @@ def build_html(data: dict, theme_name: str, art: _Assets) -> str:
 # ============================================================
 # 渲染
 # ============================================================
-async def _screenshot(html: str) -> bytes:
-    """在共享页面上渲染 HTML 并截取 #container（超采样由 context 的倍率决定）。"""
-    async with shared_browser.rendering(SUPERSAMPLE) as page:
-        await page.set_content(html, wait_until="load")
-        return await page.locator("#container").screenshot()
-
-
 async def render(data: dict, steam_id, theme: str, out_path: str) -> str:
     """把 overview 数据渲染成 PNG 并落盘，返回输出路径。"""
     art = await _prefetch_assets(ds.modules(data))
     html = build_html(data, theme, art)
-    png = await _screenshot(html)
-
-    from PIL import Image
-
-    img = Image.open(io.BytesIO(png)).convert("RGB")
-    w, h = img.size
-    img = img.resize((w // SUPERSAMPLE, h // SUPERSAMPLE), Image.LANCZOS)
-    os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".", exist_ok=True)
-    img.save(out_path)
+    await html_render.render_to_png(html, out_path, SUPERSAMPLE)
     logger.info(f"生成小黑盒战绩图：steam_id={steam_id}（{theme}）")
     return out_path
 
@@ -1183,11 +1142,7 @@ async def generate_image(steam_id, theme: str | None = None, refresh: bool = Fal
     out_path = os.path.join(OUTPUT_DIR, f"xiaoheihe_overview_{int(steam_id)}_{theme}.png")
 
     # 图片缓存：战绩时效性强，缓存期与数据缓存一致（默认 1 小时）
-    if (
-        not refresh
-        and os.path.exists(out_path)
-        and time.time() - os.path.getmtime(out_path) <= IMAGE_CACHE_SECONDS
-    ):
+    if not refresh and html_render.is_fresh(out_path, IMAGE_CACHE_SECONDS):
         logger.info(f"小黑盒战绩图缓存命中：{out_path}")
         return out_path
 

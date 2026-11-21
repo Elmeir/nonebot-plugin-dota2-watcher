@@ -1,33 +1,20 @@
-"""Stratz 开黑记录数据源：查询玩家最常一起开黑的队友（共同游玩场次）。
+"""Stratz 开黑记录：玩家最常一起开黑的队友（同队聚合）。
 
-接口：https://api.stratz.com/graphql（GraphQL 端点），使用 Bearer Token 鉴权。
-Token 配置：config.json 的 d2w_stratz_token，或环境变量 D2W_STRATZ_TOKEN / STRATZ_TOKEN。
-
-对应 stratz.com/players/{id}/peers 页面「同队（WITH）」一组：
-查询走 stratz.page.player.peers，服务端已完成全量历史聚合，
-每条含 matchCount（共同场次）/ winCount（共同胜场）/ lastMatchDateTime / steamAccount。
-一次 POST 即取回完整队友列表（take: 10000，与 stratz.com 一致），无需本地翻页。
-
-与 pro_peers 的区别：/pro 只保留 STRATZ 标记的职业选手，且合并队友+对手两组；
-本模块面向「开黑」场景，保留全部普通玩家（不按职业身份过滤），且只看同队（WITH）一组。
-
-每次调用先尝试抓取 API；抓取成功按 steam 账号缓存到 data/playmates/，
-抓取失败（网络/限流）才回退本地缓存（缓存不设时间限制）。
+查询 stratz.page.player.peers，服务端完成全量聚合，一次请求取回。
+与 pro_peers 的区别：保留全部玩家，且只看同队（WITH）。
+按账号缓存到 data/playmates/；请求失败时回退旧缓存。
 """
 
 from __future__ import annotations
 
-import asyncio
-import json
-import time
 from pathlib import Path
 
 from nonebot.log import logger
 
 from ..config import DATA_DIR
-from ..utils import cache_with_fallback, load_cache
-from .hero_pool import HeroPoolError, _graphql_post, _RateLimited, _token
-from .pro_peers import _PEERS_VARS_BASE, _parse_peer_entry
+from ..utils import cache_with_fallback
+from . import cache, stratz
+from .stratz_peers import PEERS_VARS_BASE, parse_peer_entry
 
 # 与 stratz.com peers 页面一致的聚合请求：只取同队（WITH）一组全量列表，
 # 额外请求 steamAccount.avatar（渲染每行头像用）。
@@ -57,7 +44,7 @@ CACHE_VERSION = 1  # 缓存结构版本；升级后旧缓存自动失效
 OUTPUT_LIMIT = 20  # 图片最多展示的开黑队友条数
 
 
-class PlaymatesError(Exception):
+class PlaymatesError(stratz.StratzError):
     """开黑记录抓取失败（供上层转为用户提示）。"""
 
 
@@ -68,10 +55,8 @@ def _cache_path(steam_id) -> Path:
 
 def _load_cache(cache_path: Path, steam_id):
     """读取缓存；命中（结构/账号一致）即返回 (player_name, player_avatar, rows)，否则 None。"""
-    data = load_cache(cache_path)
-    if data is None or data.get("cache_version") != CACHE_VERSION:
-        return None
-    if data.get("steam_id") != int(steam_id):
+    data = cache.read(cache_path, CACHE_VERSION, steam_id)
+    if data is None:
         return None
     return (
         data.get("player_name") or "玩家",
@@ -83,21 +68,13 @@ def _load_cache(cache_path: Path, steam_id):
 def _save_cache(
     cache_path: Path, steam_id, player_name: str, player_avatar: str, rows: list[dict]
 ) -> None:
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    cache_path.write_text(
-        json.dumps(
-            {
-                "cache_version": CACHE_VERSION,
-                "steam_id": int(steam_id),
-                "fetched_at": time.time(),
-                "player_name": player_name,
-                "player_avatar": player_avatar,
-                "rows": rows,
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
+    cache.write(
+        cache_path,
+        CACHE_VERSION,
+        steam_id,
+        player_name=player_name,
+        player_avatar=player_avatar,
+        rows=rows,
     )
 
 
@@ -114,7 +91,7 @@ def parse_playmates(payload: dict, steam_id: int) -> list[dict]:
 
     rows: list[dict] = []
     for entry in page_player.get("peers") or []:
-        parsed = _parse_peer_entry(entry)
+        parsed = parse_peer_entry(entry)
         if parsed is None:
             continue
         pid, count, win, last = parsed
@@ -145,32 +122,20 @@ async def fetch_playmates(steam_id):
     """
     steam_id = int(steam_id)
     cache_path = _cache_path(steam_id)
-    try:
-        token = _token()
-    except HeroPoolError as e:
-        raise PlaymatesError(str(e)) from e
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-        "User-Agent": "stratz-playmates/0.1",
-    }
+    token = stratz.token(PlaymatesError)
     variables = {
         "steamId": steam_id,
-        "take": _PEERS_VARS_BASE["take"],
-        "withRequest": {**_PEERS_VARS_BASE},
+        "take": PEERS_VARS_BASE["take"],
+        "withRequest": {**PEERS_VARS_BASE},
     }
 
     async def _fetch():
-        # 单次 POST 聚合查询；对限流(429/503)做退避重试
-        for attempt in range(4):
-            try:
-                payload = await _graphql_post(QUERY, variables, headers)
-                break
-            except _RateLimited:
-                if attempt < 3:
-                    await asyncio.sleep(15 * (attempt + 1))
-                    continue
-                raise
+        payload = await stratz.query(
+            QUERY,
+            variables,
+            bearer=token,
+            user_agent="stratz-playmates/0.1",
+        )
         if payload.get("errors"):
             raise PlaymatesError(f"Stratz GraphQL 返回错误：{payload['errors']}")
         account = (((payload.get("data") or {}).get("player") or {}).get("steamAccount")) or {}

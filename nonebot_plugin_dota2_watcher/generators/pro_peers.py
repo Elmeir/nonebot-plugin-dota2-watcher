@@ -1,25 +1,12 @@
-"""职业选手对战记录图片生成器：渲染「XXX与职业选手的对战记录」列表图（HTML + Playwright，风格同 /出装）。
+"""职业选手对战记录图片（HTML + Playwright，风格同 /开黑）。
 
-数据来源见 ../datasources/pro_peers.py（STRATZ + OpenDota 双源互补、Liquipedia 校验，
-按队友+对手总场次降序取前 10 位）。
-
-样式复用 /开黑（playmates.py）的主题与容器规范：同一套 FONT_FAMILY / THEME，
-外层 #container 宽度 28.125rem、圆角卡片行，头像为方形（2rem，轻微圆角），
-队友/对手战绩用胜/负配色（绿 / 红）突出。每行形如：
-
-    {头像} {选手名 (游戏昵称)}                 {最近同局日期}
-           队友 {胜/总} · 对手 {胜/总}
-
-日期为「上次共同对局」时间（无记录显示「未知」）；不再展示比赛 ID，
-因此无需调用 attach_last_match_ids（省去每位选手一次窗口查询）。
+数据来源见 datasources/pro_peers.py，按队友+对手总场次降序取前 10。
 """
 
 from __future__ import annotations
 
 import asyncio
-import io
 import os
-import time
 from datetime import datetime
 
 from nonebot.log import logger
@@ -27,7 +14,7 @@ from nonebot.log import logger
 from .. import assets
 from ..config import OUTPUT_DIR, config, normalize_image_theme
 from ..datasources import pro_peers as ds
-from . import shared_browser
+from . import html_render
 from .core_build import FONT_FAMILY, THEME_DARK, THEME_LIGHT, THEMES
 
 # 头像渲染尺寸（像素）：2rem ≈ 38px，超采样 2x 后取 96px 源图足够清晰
@@ -209,27 +196,11 @@ async def generate_image(steam_id, theme: str | None = None, refresh: bool = Fal
     out_path = os.path.join(OUTPUT_DIR, f"pro_peers_{int(steam_id)}_{theme}.png")
 
     # 图片缓存：缓存期内复用已生成的图片，避免重复渲染
-    if (
-        not refresh
-        and os.path.exists(out_path)
-        and time.time() - os.path.getmtime(out_path) <= IMAGE_CACHE_SECONDS
-    ):
+    if not refresh and html_render.is_fresh(out_path, IMAGE_CACHE_SECONDS):
         logger.info(f"职业选手对战记录图片缓存命中：{out_path}")
         return out_path
 
-    supersample = 2
-    # rendering() 保证「set_content → 截图」期间页面独占；load 事件返回后
-    # 布局与字体已就绪，无需再插入固定等待（逐像素验证完全一致）。
-    async with shared_browser.rendering(supersample) as page:
-        await page.set_content(html, wait_until="load")
-        png_bytes = await page.locator("#container").screenshot()
-
-    from PIL import Image
-
-    img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
-    w, h = img.size
-    img = img.resize((w // supersample, h // supersample), Image.LANCZOS)
-    img.save(out_path)
+    await html_render.render_to_png(html, out_path)
     logger.info(
         f"生成职业选手对战记录：{player_name}（{steam_id}）共 {len(stats)} 位，展示前 {len(top)} 位"
     )

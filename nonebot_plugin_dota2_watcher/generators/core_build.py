@@ -1,15 +1,8 @@
 #!/usr/bin/env python3
-"""
-DOTA2 Pro Tracker 核心出装图片生成器（HTML 渲染版）
+"""核心出装图片生成器（HTML + Playwright）。
 
-依赖：
-    pip install playwright
-    playwright install chromium
-
-用法：
-    python core_build.py                       # 默认 Anti-Mage, Most Played 位置
-    python core_build.py Anti-Mage 1
-    python core_build.py Axe 3 -o out.png
+独立运行：
+    python core_build.py Anti-Mage 1 -o out.png
 """
 
 import asyncio
@@ -31,8 +24,7 @@ else:
 # ============================================================
 # 目录配置
 # ============================================================
-# 兼容两种运行方式：作为插件包被导入，或作为独立脚本直接运行。
-# 所有目录 / URL / 缓存等配置统一从 config.py 读取，图片素材目录见 assets.py。
+# 兼容包导入与独立脚本两种运行方式；配置统一来自 config.py。
 if __package__:
     from .. import assets
     from .. import config as _cfg
@@ -339,8 +331,7 @@ TALENTS_CN = loadjson(TALENTS_CN_FILE)
 # ============================================================
 # 主数据（d2pt_core_build.json）进程内缓存
 # ============================================================
-# 文件约 635KB，JSON 解析一次约 11ms；每次生成图都重新解析纯属浪费。
-# 缓存键为 (mtime, size)，数据文件被更新（24 小时刷新）后自动失效。
+# 主数据约 635KB，按 (mtime, size) 做进程内缓存，文件更新后自动失效
 _data_file_cache: dict = {"stamp": None, "value": None}
 
 
@@ -942,20 +933,7 @@ async def build_html(
     ability_build=None,
     talents=None,
 ):
-    """构建完整的 HTML 页面，包含核心出装、加点、天赋、出门装与六格神装。
-
-    Parameters
-    ----------
-    hero_name_cn : str  英雄中文名
-    pos_num : str       位置编号，如 "1" / "2" / "3"
-    core_items : list   核心出装物品列表
-    theme : dict        颜色主题
-    start_items : dict  出门装数据，含 items/count/win_rate
-    lategame_inventories : list 六格神装数据列表
-    win_rate : str      核心出装胜率，如 "50%"
-    ability_build : dict | None 加点数据（含使用最多/胜率最高两套 build）
-    talents : list | None 天赋数据
-    """
+    """拼装核心出装页面 HTML（出装、加点、天赋、出门装、六神装）。"""
     sorted_core = sorted(core_items, key=lambda x: _avg_time_minutes(x.get("avg_time")))
     core_rows = await build_items_rows(sorted_core, theme, show_time=True, show_core=True, max_per_row=6)
 
@@ -1060,22 +1038,6 @@ async def build_html(
 # ============================================================
 # 渲染生成图片
 # ============================================================
-# 浏览器实例由 shared_browser 模块统一管理（跨脚本复用同一个 chromium）
-# 保留以下别名以兼容旧调用方式。
-
-BrowserSession = shared_browser.BrowserSession
-
-
-async def get_browser():
-    """兼容旧接口：获取共享浏览器实例。"""
-    return await shared_browser.get_browser()
-
-
-async def close_shared_browser():
-    """兼容旧接口：关闭共享浏览器实例。"""
-    await shared_browser.close_browser()
-
-
 async def generate_image(
     hero_query="Anti-Mage",
     position=None,
@@ -1084,40 +1046,9 @@ async def generate_image(
     theme=None,
     supersample=2,
 ):
-    """通过 Playwright 渲染 HTML 生成图片。
+    """渲染核心出装图并保存，返回是否成功。
 
-    自动使用共享浏览器实例，首次调用时启动浏览器，后续调用复用该实例。
-    批量生成图片时性能更优（约 3 倍提速）。
-
-    Parameters
-    ----------
-    hero_query : str
-        英雄名（如 "Anti-Mage"）或英雄 ID。
-    position : str | int | None
-        位置编号，如 "1" / "2" / "3" / "4" / "5"。为 None 时使用英雄的 Most Played 位置。
-    output_path : str | None
-        输出图片路径。为空时自动生成。
-    device_scale_factor : float
-        设备缩放倍率，默认 1（不缩放，内容尺寸已通过 rem 放大 2 倍）。
-    theme : str | None
-        颜色风格，'dark'（暗色）或 'light'（亮色）；留空时使用配置项
-        d2w_image_theme（默认 'light'）。
-    supersample : int
-        超采样倍率，>1 时以 device_scale_factor×supersample 渲染再 Lanczos 降采样，
-        提升边缘/文字锐度；设为 1 关闭超采样。默认 2。
-
-    Examples
-    --------
-    单张生成：
-        await generate_image('Anti-Mage', '1')
-
-    批量生成（自动复用浏览器）：
-        await generate_image('Anti-Mage', '1')
-        await generate_image('Kez', '1')
-        await generate_image('Sven', '1')
-
-    手动关闭浏览器（可选）：
-        await close_shared_browser()
+    position 为空时用英雄的 Most Played 位置；supersample > 1 时超采样后降采样。
     """
     await ensure_data_file()
     data = load_data_file()
@@ -1223,17 +1154,11 @@ async def generate_image(
         print(f"图片缓存命中（{IMAGE_CACHE_SECONDS} 秒内）: {output_path}")
         return output_path
 
-    # 使用共享浏览器渲染（自动管理，无需手动创建）
-    # 超采样抗锯齿：以更高倍率渲染，再用 PIL Lanczos 降采样回目标尺寸，
-    # 使细边框/文字边缘更锐利，同时保持最终输出大小不变（默认 600px）。
+    # 超采样渲染后降采样，细边框和文字更锐利，输出尺寸不变
     render_scale = device_scale_factor * supersample
-    # 复用共享 page 反复 set_content（而非每次 new_context/new_page），批量生成时更快。
-    # rendering() 保证「set_content → 截图」期间页面独占，并发生成不会互相覆盖。
+    # rendering() 独占页面，避免并发生成互相覆盖
     async with shared_browser.rendering(render_scale) as page:
-        # 技能/物品图标均以 base64 data URL 内嵌，无需等待网络 idle；
-        # 等 load 事件（含本地资源）即可，避免 networkidle 固定 500ms 空窗。
-        # 实测 set_content(load) 返回后布局/字体已就绪，截图结果与额外等待完全一致
-        # （逐像素 PSNR=inf），故不再插入固定 wait_for_timeout。
+        # 图标均内嵌为 data URL，等 load 即可，无需等待 networkidle
         await page.set_content(html, wait_until="load")
         container = page.locator("#container")
         png_bytes = await container.screenshot()
@@ -1315,7 +1240,7 @@ def main():
                 supersample=args.supersample,
             )
         finally:
-            await close_shared_browser()
+            await shared_browser.close_browser()
 
     result = asyncio.run(_run_with_cleanup())
     if not result:

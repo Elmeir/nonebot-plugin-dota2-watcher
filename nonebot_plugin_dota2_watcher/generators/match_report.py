@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""
-Dota 2 战报图片生成器（异步版）
-根据比赛编号ID生成战报图片
-基于 https://github.com/SonodaHanami/Steam_watcher 的战报生成模块分离
-"""
+"""DOTA2 战报图片生成器。"""
 
 import asyncio
 import logging
@@ -17,8 +13,7 @@ from PIL import Image, ImageDraw, ImageFont
 # ============================================================
 # 目录配置
 # ============================================================
-# 兼容两种运行方式：作为插件包被导入，或作为独立脚本直接运行。
-# 所有目录 / URL / 超时等配置统一从 config.py 读取，图片素材目录见 assets.py。
+# 兼容包导入与独立脚本两种运行方式；配置统一来自 config.py。
 if __package__:
     from .. import assets
     from .. import config as _cfg
@@ -324,10 +319,8 @@ def draw_text_stroke(draw, pos, text, font, fill, stroke_fill, stroke_width=1):
 
 
 # ============================================================
-# 职业选手认证徽章（OpenDota iconConfirmed 图标，金色圆 + 白色对勾）
+# 职业选手认证徽章（素材与下载见 assets）
 # ============================================================
-# 素材路径与下载逻辑统一在 assets 中（/战绩 也用同一张），这里只保留调用入口。
-# 用法：await assets.ensure_pro_badge() 预取，assets.pro_badge_image() 取图。
 
 
 # ============================================================
@@ -734,9 +727,7 @@ def get_image(img_name):
     return assets.get_image(img_name)
 
 
-# 缩放结果缓存：(名称, 尺寸) -> 已按 LANCZOS 缩放到目标尺寸的图。
-# 战报里每位玩家都要取同一批素材缩到同样尺寸（英雄/段位/物品各 10 次），
-# 缓存后把约 15ms 的重复 resize 压到近 0；尺寸组合有限，不会无限增长。
+# 缩放结果缓存，避免同批素材重复 resize
 def get_scaled_image(img_name, size, resample=None):
     """取图片并按 size 缩放，结果按 (名称, 尺寸) 缓存（返回副本，调用方可安全修改）。"""
     return assets.get_scaled_image(img_name, size, resample)
@@ -969,8 +960,7 @@ async def get_match(match_id, wait=True, timeout=None, force=False, match_data=N
 # ============================================================
 # 匿名玩家数据补充（小黑盒）
 # ============================================================
-# 小黑盒接口对隐私/被风控玩家会返回字面占位昵称「匿名玩家」（同一比赛
-# 多次请求结果不稳定，有时有真名有时是占位），视为无名处理，保留后续重试机会
+# 小黑盒对隐私玩家可能返回占位昵称「匿名玩家」，视为无名并保留重试机会
 XIAOHEIHE_PLACEHOLDER_NAME = "匿名玩家"
 
 PRO_PLAYERS_CACHE = os.path.join(_cfg.DATA_DIR, "pro_players.json")
@@ -1065,24 +1055,11 @@ def _is_nameless(player) -> bool:
 
 
 async def _supplement_anonymous(match_id, match):
-    """用小黑盒数据补充 OpenDota 匿名玩家（无任何名字）的昵称与段位。
+    """用小黑盒数据补充 OpenDota 匿名玩家的昵称、段位与职业徽章。
 
-    OpenDota 对隐私资料玩家拿不到昵称，战报中只能显示「匿名玩家」；
-    小黑盒对同一比赛的数据覆盖更全，可为这些玩家补回昵称（personaname），
-    缺段位（rank_tier）时一并补充。按 player_slot 匹配（与 Valve 槽位一致，
-    最可靠），account_id 兜底。补充成功后回写比赛缓存，后续渲染不再重复请求。
-
-    职业认证：隐私保护会同时隐藏 account_id，OpenDota 无法关联职业注册表，
-    职业选手也会显示成「匿名玩家」（无认证徽章）。补充时三重比对：
-    小黑盒补回的 account_id 命中 OpenDota 职业注册表 → 写入职业名 name
-    （渲染时触发认证徽章，与 OpenDota 对职业选手的展示一致）；命中 /pro
-    指令缓存的职业名单（STRATZ/OpenDota 职业对战记录）或小黑盒认证选手
-    标记（team_info，口径均偏宽）→ 仅加 is_pro 徽章不改名。普通玩家的
-    昵称不写入 name，避免误加徽章。
-
-    注意：小黑盒对部分玩家会返回字面占位昵称「匿名玩家」（同一比赛多次
-    请求结果不稳定），占位串不写入缓存，玩家保持无名以便下次生成时重试；
-    缓存中已存在的占位串也会被替换为后续拿到的真名。
+    按 player_slot 匹配，account_id 兜底；补到真名后回写比赛缓存。
+    职业名单命中时写 name（触发认证徽章），仅有 PRO 标记则加 is_pro。
+    占位昵称「匿名玩家」不写入，便于下次重试。
     """
     players = match.get("players") or []
     anonymous = [p for p in players if _is_nameless(p)]
@@ -1462,10 +1439,7 @@ def _render_match_image(match, font_paths, scale, output_path, match_id, t0):
                 (hero_x, hero_y),
             )
 
-            # 等级角标：贴英雄图左下角。底块尺寸由字形包围盒加 lv_pad 得出——
-            # lv_pad 是底块的 padding（数字到深灰底边缘的留白），不是位移。
-            # 底块贴角不内缩，非 MVP 行才不会悬空；MVP 行的金框宽 3px，
-            # padding 取得比它大，数字就不会被金框压到。
+            # 等级角标：底块按字形包围盒加 padding，贴角不内缩
             lv_pad_x, lv_pad_y = _s(4), _s(3)
             level = str(p["level"])
             lv_left, lv_top, lv_right, lv_bottom = font_glyph_bbox(lv_font, level)
@@ -1734,9 +1708,7 @@ def _render_match_image(match, font_paths, scale, output_path, match_id, t0):
                             fill=(192, 192, 192),
                         )
 
-            # 背包物品（物品格下方，带细边框；背景上移 border 与物品栏共享底边框，避免叠加变粗）
-            # 默认 3 格，总宽与物品栏前两格对齐：右边框与物品栏第二格的右边框重合；
-            # 独行德鲁伊把这排换成 6 格熊灵装备，格子沿用背包格尺寸，只把格数翻倍。
+            # 背包物品：默认 3 格，宽度与物品栏前两格对齐；熊灵装备沿用同尺寸的 6 格
             bp_h = _s(19)
             bp_span3 = border * 3 + cell_w * 2
             bp_w, bp_extra = divmod(bp_span3 - border * 4, len(BACKPACK_SLOTS))

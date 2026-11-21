@@ -1,15 +1,8 @@
-"""小黑盒 Dota2 比赛详情数据源（httpx 异步实现，无需登录）。
+"""小黑盒比赛详情（httpx，免登录），用作 OpenDota 不可用时的回退数据源。
 
-从公开接口 `https://api.xiaoheihe.cn/game/dota2/match_detail` 拉取指定
-`match_id` 的比赛结果，并转换为与 OpenDota `matches/{id}` 兼容的结构，
-作为 OpenDota 比赛数据不可用时的回退数据源。
-
-说明：
-- 该接口为公开接口：无需 Cookie、无需扫码登录即可获取比赛结果。
-- hkey 签名算法独立移植自 MIT 许可的 heybox-core 实现。
-- 返回结构兼容 `generators/match_report.py`（战报图片）与
-  `generators/match_builder.py`（战报文本）所需字段；其中 `team_number` /
-  `isRadiant` 等由 player_slot 推导，与 OpenDota 保持一致。
+接口：api.xiaoheihe.cn/game/dota2/match_detail，需要 hkey 签名
+（算法移植自 MIT 许可的 heybox-core）。
+返回结构兼容 generators/match_report.py 与 match_builder.py。
 """
 
 import hashlib

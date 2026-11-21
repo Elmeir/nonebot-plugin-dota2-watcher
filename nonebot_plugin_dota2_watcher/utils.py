@@ -94,9 +94,8 @@ async def get_http_client() -> httpx.AsyncClient:
     return _client
 
 
-# 部分公开素材 CDN（如 cdn.cloudflare.steamstatic.com）的证书缺少 Authority Key Identifier，
-# 在较新的 OpenSSL / Python 上会触发 CERTIFICATE_VERIFY_FAILED。这里为素材下载统一
-# 使用不校验证书的上下文，下载内容为公开图片/数据，风险可控。
+# 部分素材 CDN 证书缺少 Authority Key Identifier，新版 OpenSSL 会校验失败；
+# 下载内容为公开图片 / 数据，统一使用不校验证书的上下文
 _UNVERIFIED_SSL_CONTEXT = ssl.create_default_context()
 _UNVERIFIED_SSL_CONTEXT.check_hostname = False
 _UNVERIFIED_SSL_CONTEXT.verify_mode = ssl.CERT_NONE
@@ -246,21 +245,10 @@ async def cache_with_fallback(
     fallback=True,
     warn=None,
 ):
-    """统一的「缓存优先读取 + 拉取失败回退」辅助（异步）。
+    """缓存优先读取，拉取失败时回退缓存（异步）。
 
-    流程：
-      1) 用 loader(filepath) 读取缓存（缺省 utils.load_cache，失败返回 None）；
-      2) 缓存存在且未过期（且非 force_update）→ 直接返回缓存；
-      3) 否则 await fetch() 拉取新数据；
-      4) fetch 抛异常 → 若已有缓存且 fallback 为 True → 调用 warn() 并返回缓存，否则原样抛出。
-
-    filepath    : 缓存文件路径
-    fetch       : () -> data 的异步拉取函数（成功后应自行保存缓存）
-    max_age     : 缓存有效期秒数；None 表示「文件存在即为有效」
-    force_update: True 时忽略缓存新鲜度强制拉取（拉取失败仍按 fallback 处理）
-    loader      : (path) -> data，读取缓存；失败返回 None（缺省 utils.load_cache）
-    fallback    : 拉取失败时是否回退已读取的缓存
-    warn        : 回退缓存时的零参回调（用于打日志）
+    force_update 忽略新鲜度；fallback 为 False 时异常原样抛出；
+    loader / warn 可替换默认的读取与告警实现。
     """
     cached = None
     if os.path.exists(filepath):
@@ -282,10 +270,8 @@ async def cache_with_fallback(
         raise
 
 
-# 图片 data URI 缓存：同一素材（物品/技能图标）会被反复内嵌进 HTML，
-# 每次读盘 + base64 编码都有成本（实测 448 个物品图标约 50ms/轮），
-# 缓存后命中分支为纯内存查找。键同时带文件大小与 mtime，
-# 素材被重新下载（大小/时间变化）时自动失效。
+# data URI 缓存：同一素材会被反复内嵌进 HTML，命中后为纯内存查找
+# 键带文件大小与 mtime，素材更新后自动失效
 _data_uri_cache: dict[str, tuple[tuple[int, float], str]] = {}
 
 

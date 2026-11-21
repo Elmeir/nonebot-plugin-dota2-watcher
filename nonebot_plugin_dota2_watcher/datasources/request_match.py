@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from ..config import (
     OPENDOTA_MATCH_URL,
-    STEAM_MATCH_DETAILS_URL,
     STEAM_MATCH_HISTORY_URL,
     STEAM_NEWS_URL,
     config,
@@ -16,9 +15,7 @@ from .xiaoheihe import request_match_info_xiaoheihe
 # Steam Web API Key（未配置时相关播报会报错）
 API_KEY = config.d2w_steam_api_key
 
-# 比赛 ID 的来源。决定比赛详情该走哪个接口：
-# 小黑盒取到的 ID 必须用小黑盒详情接口 —— 这类玩家的战绩在 OpenDota 里是匿名的，
-# 无法按 account_id 定位到本人，用 OpenDota 数据会导致「找不到该玩家」而播报失败。
+# 小黑盒 ID 必须用小黑盒详情接口：这类玩家在 OpenDota 中匿名，无法按账号定位
 SOURCE_STEAM = "steam"
 SOURCE_XIAOHEIHE = "xiaoheihe"
 
@@ -50,20 +47,6 @@ async def request_match_history(player: Player, api_key: str | None = None) -> i
     if not matches:
         raise DOTA2HTTPError(f"无法获取{player.nickname}的最近比赛ID")
     return matches[0]["match_id"]
-
-
-async def request_match_info_steam(match_id: int, api_key: str | None = None) -> dict | None:
-    """通过 Steam 官方 API 获取比赛详情。
-
-    注意：7.36 版本后此接口已无法获取比赛结果，请优先使用 openDota。
-    """
-    api_key = api_key or API_KEY
-    url = STEAM_MATCH_DETAILS_URL.format(key=api_key, match_id=match_id)
-    data = await get_json(url)  # 网络/状态码异常在本层抛出，保留统一文案
-    try:
-        return (data or {}).get("result")
-    except Exception:
-        raise DOTA2HTTPError("DOTA2开黑战报生成失败")
 
 
 async def _fetch_opendota_match(match_id: int) -> dict | None:

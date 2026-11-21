@@ -1,14 +1,7 @@
-"""英雄池环形图生成器：渲染 STRATZ 风格 PNG 环形图（纯 Pillow，无 numpy 依赖）。
+"""英雄池环形图（纯 Pillow）。
 
-样式模仿 Stratz 站点（stratz.com/players/）：按出场占比划分的浅灰扇区（灰细边）、
-出场前三英雄用按各自头像主色调生成的径向渐变高亮，英雄头像环绕环带且出场越多越大；
-环心还有一圈按 position 占比着色的内环带（已缩小，外侧留空），并放置 1-5 号位
-图标；中心洞内显示玩家 steam 头像（圆形裁切），玩家名以带黑色描边的纯色文字
-按圆弧排在空环带上（自动缩字号、必要时截断）。
-
-默认使用亮色主题，由配置项 d2w_image_theme 统一决定（见 config.normalize_image_theme），
-生成函数也接受 theme 参数临时覆盖。
-数据来源见 ../datasources/hero_pool.py。
+按出场占比划分扇区，前三英雄用头像主色渐变高亮，内环为 1-5 号位占比。
+数据来源见 datasources/hero_pool.py；主题由 d2w_image_theme 决定。
 """
 
 from __future__ import annotations
@@ -34,15 +27,11 @@ ICON_RADIUS = 130 * SCALE  # 头像中心所在半径（环带中部）
 # ============================================================
 # 主题配置：亮色（默认）/ 暗色
 # ============================================================
-# 主题不再由本模块常量决定，统一由配置项 d2w_image_theme 提供默认值
-# （见 config.normalize_image_theme），生成函数也接受 theme 参数临时覆盖。
+# 默认值来自 d2w_image_theme，生成函数可用 theme 参数临时覆盖
 DEFAULT_THEME = "light"
 
-# 环心内环带（模仿 STRATZ 中间内环：真环形 + 描边），按 position 占比
-# Stratz 320 坐标下内环外半径 84、内半径 37（环带宽 47，中间是洞）。
-# 这里把内环整体缩小（外半径 84 -> 62），留出外侧空环带，用于排布玩家名弧。
-# 各扇区 fill-opacity + 描边，圆心留空 —— 均为 stratz.com/players/ 实测值
-INNER_OUT = 0.75 * R_IN  # 内环外半径（已缩小，腾出名字环带）
+# 内环按 STRATZ 站点缩小，外侧留出名字环带
+INNER_OUT = 0.75 * R_IN  # 内环外半径
 INNER_IN = INNER_OUT * 0.55  # 内环内半径（进一步缩小，中心洞更小、位置环带更宽）
 INNER_ICON_RADIUS = (INNER_OUT + INNER_IN) / 2.0  # 内环位置图标所在半径（环带中部）
 
@@ -122,9 +111,8 @@ THEMES: dict[str, dict] = {
 
 PositionKey = str | int  # 位置键：1-5 或 "unknown"
 
-# 内环位置图标路径（viewBox 24x24，路径 d 取自 stratz.com/players/ 内环内联 SVG 原始数据）。
-# 每段路径是 (path_d, fill_key, fill_opacity)：fill_key 对应 THEMES[*]["icons"] 中的填充，
-# 可为单个颜色字符串（纯色填充）或 ((stops0, stops1), (x1,y1,x2,y2))（userSpaceOnUse 线性渐变）。
+# 内环位置图标路径（取自 stratz.com/players/ 内联 SVG）
+# 每段为 (path_d, fill_key, fill_opacity)，fill_key 对应 THEMES[*]["icons"]
 _ICON_PATHS: dict[PositionKey, list[tuple[str, str, float]]] = {
     # 未知位置：问号（STRATZ 用 text.tertiary，此处按主题近似为灰）
     "unknown": [
@@ -661,12 +649,9 @@ def _draw_position_icon(
 
 
 # ============================================================
-# 环心玩家名水印（纯色 + 黑色描边署名，圆弧排布在空环带上）
+# 环心玩家名水印（圆弧排布在空环带上）
 # ============================================================
-# 复用战报生成器 match_report 的字体系统（init_fonts / draw_text_with_fallback），
-# 支持中文、emoji 等任意字符；结果懒加载并缓存，避免每次渲染都扫描字体。
-# 内环缩小后外侧留出空环带，玩家名以圆弧（顶部居中、左右对称）排布其上，
-# 不占用中心小圈，也不压到位置图标。
+# 复用 match_report 的字体系统，支持中文 / emoji；字体路径懒加载并缓存
 NAME_RADIUS = (INNER_OUT + R_IN) / 2.0  # 名字弧形所在半径（最终像素）
 NAME_MAX_W = 2 * math.pi * NAME_RADIUS * 0.6  # 名字弧长上限（最终像素，留边距）
 NAME_MAX_SIZE = 30  # 起始字号（最终像素）
@@ -780,10 +765,7 @@ def _draw_center_avatar(canvas, cx, cy, img, hole_r) -> None:
 # ============================================================
 # PNG 渲染
 # ============================================================
-# 半径 ramp 缓存：键为 (size, ro)，值为「像素值 = 255 * clamp(到中心距离 / ro)」的 L 图。
-# 由 Pillow 内置 radial_gradient（256x256，中心 0 → 角点 255，按到角点距离线性）
-# 经一次 LUT 归一化后双线性放大得到，等价于逐圈画实心圆盘的径向渐变，
-# 但把「画 N 个圆盘」的逐圈绘制换成一次 C 级 LUT + 缩放。
+# 半径 ramp 缓存：用一次 LUT + 缩放代替逐圈画圆盘
 _RAMP_CACHE: dict[tuple[int, int], object] = {}
 
 
@@ -854,10 +836,7 @@ async def render_png(
             pts.append(_pl(a1 - (a1 - a0) * k / steps, r_in))
         return [(round(x), round(y)) for x, y in pts]
 
-    # 扇区填充（超采样，边缘平滑）
-    # 普通扇区均为纯色，先把「灰色 × 不透明度」混合到背景得到最终色，再直接填充多边形，
-    # 避免为每个普通扇区分配 W×W 的掩码/RGBA 图层再做 alpha_composite（大幅减少内存与耗时）。
-    # 这里的 alpha 归一化与下方 mask.point(int(v * opacity)) 完全一致，保证逐像素等价。
+    # 普通扇区为纯色，直接混合后填充多边形，省去整幅掩码与 alpha_composite
     sector_fill = _color_rgb(th["sector_fill"])
     sector_op = int(th["sector_opacity"] * 255) / 255.0
     flat_fill = tuple(round(sector_fill[i] * sector_op + bg[i] * (1 - sector_op)) for i in range(3))
@@ -983,9 +962,7 @@ async def render_png(
             wm_fill = _color_rgb(th["watermark"])
             _draw_name_on_ring(canvas, player_name, font_paths, cx, cy, wm_fill, (0, 0, 0))
 
-    # 统一降采样到目标尺寸：先做整数倍盒式 reduce（C 实现、极快）把画布缩到目标的
-    # 2 倍左右，再补一次 LANCZOS 收敛到目标尺寸。与「一步 LANCZOS 缩到目标」的结果
-    # PSNR 55+ dB（视觉无损），但省掉了大画布上的高代价卷积（实测 48ms -> 21ms）。
+    # 先整数倍盒式缩小到目标 2 倍左右，再 LANCZOS 收尾，视觉无损且更快
     factor = 1
     while W // (factor * 2) >= size * 2:
         factor *= 2

@@ -1,22 +1,13 @@
-"""小黑盒玩家战绩总览数据源（overview 接口）。
+"""小黑盒玩家战绩总览（/战绩 数据源）。
 
-接口：``https://v5api.maxjia.com/game/dota2/player/overview?steam_id=<id>``
-该接口为公开接口、**免签名**（只需 steam_id），返回玩家主页「最近战绩」页面的
-全部模块（玩家卡 / 段位 / 近20场 / 比赛列表 / 常用英雄 / 生涯纪录 ...）。
-
-与 ``datasources/xiaoheihe.py`` 的区别：那边是单场比赛详情接口
-（``api.xiaoheihe.cn/game/dota2/match_detail``，需要 hkey 签名，用于 OpenDota
-兜底）；本模块只服务 /战绩 指令，两者接口与用途均不同，故独立成模块。
-
-缓存：原始响应按 steam_id 落盘到 ``data/xiaoheihe_overview/overview_<id>.json``，
-有效期见配置项 ``d2w_xiaoheihe_cache_seconds``（默认 1 小时）。战绩时效性强，
-超过缓存期即重新拉取；拉取失败时回退本地缓存（有缓存就不让指令失败）。
+接口：v5api.maxjia.com/game/dota2/player/overview?steam_id=...（免签名）。
+原始响应按 steam_id 缓存到 data/xiaoheihe_overview/，有效期见
+d2w_xiaoheihe_cache_seconds；请求失败时回退旧缓存。
 """
 
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
 
 from nonebot.log import logger
@@ -34,9 +25,7 @@ HEADERS = {
 CACHE_DIR = DATA_DIR / "xiaoheihe_overview"
 CACHE_VERSION = 1
 
-# 判断「玩家是否有可展示内容」的模块：接口对不存在的玩家仍会下发 header（占位昵称）、
-# mmr_stats（全 0）、career_record（全 0）与 r20_data_stats（全 0），因此既要看列表
-# 是否为空，也要看其中的数值是否全为 0。
+# 接口对不存在的玩家也会下发空壳模块，需同时检查列表与数值
 CONTENT_MODULES = {
     "recent_match": "match_list",
     "match_list": "match_list",
@@ -45,11 +34,7 @@ CONTENT_MODULES = {
     "career_record": "career_record",
 }
 
-# 接口下发的说明模块。注意它表示「部分数据缺失」而非「没有战绩」：
-# 实测 138081831 / iNSaNiA 等玩家战绩完整（20 场近战、5 场比赛、5 个英雄、
-# 12 项纪录），但因为 Steam 资料未完全公开仍会带这条提示；反过来，
-# 完全不存在的 steam_id（如 999999999999）反而不下发 notify。
-# 因此 notify 只能用于「附带说明」，绝不能作为「无战绩」的判定依据。
+# notify 只表示部分数据缺失，不能作为「无战绩」的判定依据
 NOTICE_MODULE = "notify"
 
 # 视为「没有数值」的取值：接口用 0 / 0.0 / 0.0% 表示该统计项无数据
@@ -151,15 +136,10 @@ def modules(data: dict) -> dict[str, dict]:
 
 
 def has_any_content(data: dict) -> bool:
-    """是否包含任何可展示的战绩内容（任一战绩模块里存在非零的真实条目）。
+    """是否存在可展示的战绩内容。
 
-    接口对不存在的玩家不会报错，而是返回 200 + 空壳：header 里是占位昵称，
-    recent_match / match_list / common_hero 为空，career_record / r20_data_stats
-    全是 0。因此不能用「有没有 header / 模块」判断，必须看各模块的实际条目。
-
-    特别注意：notify 模块**不能**作为「无战绩」的判据——它表示「部分数据缺失」，
-    有完整战绩的玩家（如 138081831）同样会带这条提示，而完全不存在的 steam_id
-    反而不下发它。是否无战绩只能由各模块的实际条目决定。
+    接口对不存在的玩家返回空壳；notify 只表示部分数据缺失，
+    因此只能检查各模块的实际条目。
     """
     index = modules(data)
     return any(
@@ -209,24 +189,3 @@ def latest_match_id(data: dict) -> int:
     """
     ids = recent_match_ids(data)
     return ids[0] if ids else 0
-
-
-def fetched_at(steam_id) -> float:
-    """返回本地缓存文件的抓取时间（文件 mtime）；无缓存返回 0。"""
-    try:
-        return _cache_path(steam_id).stat().st_mtime
-    except OSError:
-        return 0.0
-
-
-def cache_age_text(steam_id) -> str:
-    """缓存时间的人类可读描述（如「12 分钟前」）；无缓存返回空串。"""
-    stamp = fetched_at(steam_id)
-    if not stamp:
-        return ""
-    minutes = max(0, int((time.time() - stamp) // 60))
-    if minutes < 1:
-        return "刚刚"
-    if minutes < 60:
-        return f"{minutes} 分钟前"
-    return f"{minutes // 60} 小时前"

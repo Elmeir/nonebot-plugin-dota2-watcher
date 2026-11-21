@@ -1,15 +1,8 @@
-"""插件配置。
+"""插件配置与运行期常量。
 
-- `Config`：NoneBot 用户可配置项，默认值在包内；用户配置优先从数据目录下的
-  `config.json` 读取（首次运行自动生成），其次才是 `D2W_` 前缀的环境变量 / `.env`
-  （例如 `D2W_STEAM_API_KEY`、`D2W_PROXIES`、`D2W_GH_PROXY`、`D2W_IMAGE_THEME`）。
-  包内只保存默认值，用户无需（也不应）直接修改本文件，避免升级插件时配置被覆盖。
-- 文件后半部分：运行期目录、数据源 URL 等常量；运行期数据/缓存目录由
-  nonebot-plugin-localstore 提供（可用 `LOCALSTORE_DATA_DIR` / `LOCALSTORE_CACHE_DIR` 覆盖），
-  GitHub 加速前缀则优先读取上面的 `D2W_GH_PROXY` 配置项。
-
-本文件不强制依赖 NoneBot：在独立脚本中直接 `import config` 时，
-会退化为使用默认配置，方便脱离框架单独测试生成器脚本。
+`Config` 为用户可配置项：数据目录下的 `config.json` > `D2W_` 环境变量 > 默认值。
+本文件只保存默认值，请勿直接修改（升级会被覆盖）。
+独立脚本中导入时自动退化为默认配置。
 """
 
 import json
@@ -23,14 +16,11 @@ class Config(BaseModel):
     """NoneBot 用户可配置项（环境变量以 D2W_ 为前缀，如 D2W_TIMEOUT）。"""
 
     # ===================== API 密钥 =====================
-    # Steam Web API Key（https://steamcommunity.com/dev/apikey 申请）
-    # 用于拉取玩家比赛历史；留空时比赛播报不可用但其余功能正常
+    # Steam Web API Key（https://steamcommunity.com/dev/apikey）；留空时比赛播报不可用
     d2w_steam_api_key: str = ""
-    # TI 赛事/实时单局使用的 Steam Web API Key（可另申请一个分开用）
-    # 留空时回退使用 d2w_steam_api_key
+    # TI 赛事专用 Key；留空时复用 d2w_steam_api_key
     d2w_ti_steam_api_key: str = ""
-    # Stratz GraphQL API Token（/英雄池 使用，申请地址 https://stratz.com/api）
-    # 可在 config.json 中设置，或使用环境变量 D2W_STRATZ_TOKEN
+    # Stratz Token（https://stratz.com/api），/英雄池 等使用
     d2w_stratz_token: str = ""
 
     # ===================== 网络 =====================
@@ -61,15 +51,14 @@ class Config(BaseModel):
     d2w_benchmark_threshold: float = 0.5
 
     # ===================== 图片风格 =====================
-    # 图片生成风格统一默认值：light（亮色）/ dark（暗色）
-    # 作用于 /出装、/开黑、/英雄池；命令上的 dark|light 参数可临时覆盖本项
+    # 图片默认风格：light / dark；命令上的 dark|light 参数可临时覆盖
     d2w_image_theme: str = "light"
 
     # ===================== 定时任务 =====================
-    # 总开关：设为 false 时对应定时任务完全不注册、不轮询，零性能开销（彻底关闭）
+    # 总开关：false 时不注册对应定时任务
     d2w_ti_enabled: bool = False
     d2w_news_enabled: bool = True
-    # 战队名单变动订阅总开关；未配置 Steam Key 时即使开启也不会发起请求
+    # 战队名单变动订阅开关；未配置 Steam Key 时不发起请求
     d2w_roster_enabled: bool = True
     # 各定时任务轮询间隔（秒）
     d2w_ti_poll_interval: int = 10
@@ -79,12 +68,9 @@ class Config(BaseModel):
     d2w_roster_poll_interval: int = 21600
     # 拉取玩家比赛历史时的并发上限（Steam 接口存在速率限制，过大易触发 429/503）
     d2w_history_concurrency: int = 3
-    # 战绩被隐藏（Steam 返回 status 15）时的回退开关：开启后连续失败达到阈值时
-    # 改从小黑盒 overview 取最近比赛 ID（小黑盒对隐藏战绩的玩家仍能拿到匿名数据）。
-    # 关闭后隐藏战绩的玩家直接跳过，不会访问小黑盒。
+    # 战绩被隐藏（status 15）时是否回退小黑盒；关闭后直接跳过
     d2w_xiaoheihe_fallback_enabled: bool = True
-    # 连续「战绩被隐藏」多少次后才回退小黑盒；用于控制小黑盒访问频率、规避风控。
-    # 每次尝试回退后计数归零，因此最坏情况下每 N 轮轮询才会访问一次小黑盒。
+    # 连续隐藏多少次才回退一次；每次尝试后计数归零
     d2w_hidden_fallback_threshold: int = 10
 
     # ===================== 缓存 =====================
@@ -112,8 +98,7 @@ except Exception:
     logger = logging.getLogger(__name__)
 
 # ============================================================
-# 数据目录下的 config.json 配置文件（优先于环境变量/.env），便于运行期直接编辑。
-# 首次运行会自动生成默认配置；之后以该 JSON 为准。
+# 数据目录下的 config.json（优先于环境变量），首次运行自动生成
 # ============================================================
 try:
     from nonebot_plugin_localstore import get_data_dir
@@ -204,9 +189,7 @@ def normalize_image_theme(theme: str | None = None) -> str:
 
 
 # ============================================================
-# 运行期目录：优先使用 nonebot-plugin-localstore 提供的标准数据/缓存目录，
-# 独立脚本（无 NoneBot）退化为当前工作目录，从而避免污染插件包。
-# 目录位置可用 LOCALSTORE_DATA_DIR / LOCALSTORE_CACHE_DIR 覆盖。
+# 运行期目录：优先使用 localstore，独立脚本退化为当前目录
 # ============================================================
 try:
     from nonebot_plugin_localstore import get_cache_dir, get_data_dir
@@ -262,9 +245,6 @@ OPENDOTA_PRO_PLAYERS_URL = f"{OPENDOTA_BASE}/api/proPlayers"
 # Steam Web API
 STEAM_API_BASE = "https://api.steampowered.com"
 STEAM_MATCH_HISTORY_URL = f"{STEAM_API_BASE}/IDOTA2Match_570/GetMatchHistory/v001/?key={{key}}&account_id={{account_id}}&matches_requested=1"
-STEAM_MATCH_DETAILS_URL = (
-    f"{STEAM_API_BASE}/IDOTA2Match_570/GetMatchDetails/V001/?key={{key}}&match_id={{match_id}}"
-)
 STEAM_LIVE_GAMES_URL = f"{STEAM_API_BASE}/IDOTA2Match_570/GetLiveLeagueGames/v1?key={{key}}"
 # 战队登记名单（player_N_account_id）；注意 start_at_team_id 是游标而非精确匹配，
 # 且响应不含 team_id 字段，只能用 name/tag 校验是否命中

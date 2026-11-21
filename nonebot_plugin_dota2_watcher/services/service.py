@@ -1,38 +1,31 @@
-"""业务逻辑层：命令处理与定时任务共用的纯逻辑。
+"""业务编排：命令与定时任务共用的逻辑，不依赖 NoneBot matcher。
 
-本模块不依赖 NoneBot matcher，只通过独立函数暴露可复用业务，
-供命令层（commands）与定时任务层（scheduler）调用，保持两者职责单一。
+群播报与新闻去重分别见 broadcast.py / news.py。
 """
 
 import asyncio
-import json
 from dataclasses import dataclass, field
-from pathlib import Path
 
-from nonebot import get_bots
-from nonebot.adapters import Bot
 from nonebot.adapters.onebot.v11 import Message, MessageSegment
 from nonebot.log import logger
 
-from ..config import DATA_DIR, config, is_group_allowed, normalize_image_theme
-from ..datasources import d2pt, pro_names, team_roster, ti_results
-from ..datasources.hero_pool import HeroPoolError
-from ..datasources.playmates import PlaymatesError
-from ..datasources.pro_peers import ProPeersError
+from ..config import config, is_group_allowed, normalize_image_theme
+from ..datasources import d2pt, pro_names, stratz, team_roster, ti_results
 from ..datasources.request_match import (
     SOURCE_STEAM,
     SOURCE_XIAOHEIHE,
     request_match_info,
-    request_news,
 )
 from ..datasources.xiaoheihe_overview import OverviewError
 from ..generators import core_build, d2pt_ranking, hero_pool, match_builder
 from ..generators import playmates as playmates_gen
 from ..generators import pro_peers as pro_peers_gen
 from ..generators import xiaoheihe_overview as xiaoheihe_gen
-from ..utils import load_cache, player_team, run_single_flight
+from ..utils import player_team, run_single_flight
 from . import store
+from .broadcast import broadcast_text, broadcast_text_to_groups, send_group_message
 from .match_history import RecentMatch, fetch_recent_match, latest_known_match_id
+from .news import sync_baseline
 from .player import Player
 
 
@@ -112,7 +105,7 @@ def toggle_subscription(group_id, key: str) -> str:
     name = _SUBSCRIPTIONS[key][0]
     enabled = store.toggle_subscription(str(group_id), key)
     store.save()
-    _sync_news_baseline(key)
+    sync_baseline(key)
     return f"已{'开启' if enabled else '关闭'}{name}订阅\n" + subscription_status(group_id)
 
 
@@ -121,7 +114,7 @@ def set_subscription(group_id, key: str, enabled: bool) -> str:
     name = _SUBSCRIPTIONS[key][0]
     enabled = store.set_subscription(str(group_id), key, bool(enabled))
     store.save()
-    _sync_news_baseline(key)
+    sync_baseline(key)
     return f"{name}订阅已{_state(enabled)}\n" + subscription_status(group_id)
 
 
@@ -176,22 +169,32 @@ async def report_image(match_id: str) -> str:
     return await run_single_flight(("report", match_id), _build)
 
 
+async def _render_cached_image(key, label: str, render, *, user_errors=()) -> str:
+    """single-flight 渲染图片：领域错误转为提示文案，其余异常记日志后返回空串。"""
+
+    async def _build() -> str:
+        try:
+            return await render() or ""
+        except user_errors as e:
+            raise ValueError(str(e)) from e
+        except Exception:
+            logger.exception(f"{label}生成失败")
+            return ""
+
+    return await run_single_flight(key, _build)
+
+
 async def build_image(hero: str, position=None, theme: str | None = None) -> str:
     """生成核心出装图片，返回本地路径；失败返回空串。相同参数的并发查询共享同一次执行。
 
     theme 留空时使用配置项 d2w_image_theme（默认 light）。
     """
     theme = normalize_image_theme(theme)
-
-    async def _build() -> str:
-        try:
-            result = await core_build.generate_image(hero, position, theme=theme)
-            return result or ""
-        except Exception:
-            logger.exception("出装图生成失败")
-            return ""
-
-    return await run_single_flight(("build", hero, position, theme), _build)
+    return await _render_cached_image(
+        ("build", hero, position, theme),
+        "出装图",
+        lambda: core_build.generate_image(hero, position, theme=theme),
+    )
 
 
 async def ti_image(stage: str = "auto") -> str:
@@ -200,16 +203,11 @@ async def ti_image(stage: str = "auto") -> str:
     stage 取值 auto/swiss/elimination_round/main_event，传 auto 表示自动判断当前（最新）阶段。
     相同阶段的并发查询共享同一次执行。
     """
-
-    async def _build() -> str:
-        try:
-            result = await ti_results.generate_league_report_image(stage=stage)
-            return result or ""
-        except Exception:
-            logger.exception("TI 战报生成失败")
-            return ""
-
-    return await run_single_flight(("ti", stage), _build)
+    return await _render_cached_image(
+        ("ti", stage),
+        "TI 战报",
+        lambda: ti_results.generate_league_report_image(stage=stage),
+    )
 
 
 # 英雄池比赛数量档位：关键字（中英） -> 拉取场次；非法关键字回落默认挡
@@ -244,98 +242,65 @@ def _resolve_steam_id(group_id, arg: str) -> int:
 
 
 async def hero_pool_image(group_id, arg: str, size: str = "", theme: str | None = None) -> str:
-    """生成玩家英雄池环形图，返回本地图片路径。
+    """生成英雄池环形图；失败返回空串，参数 / Token 错误抛 ValueError。
 
-    arg 可为 steam_id（纯数字）或本群已订阅玩家昵称；
-    size 为比赛数量档位（min/mid/max 或 小/中/大，留空默认 25 场）；
-    theme 留空时使用配置项 d2w_image_theme（默认 light）。
-    参数解析失败 / 未配置 Token 时抛出 ValueError（提示文案），生成失败返回空串。
+    arg 为 steam_id 或本群昵称；size 取 min/mid/max 或小/中/大（默认 25 场）。
     """
     steam_id = _resolve_steam_id(group_id, arg)
     count = _HERO_POOL_SIZES.get(size.strip().lower(), 25)
     theme = normalize_image_theme(theme)
-
-    async def _build() -> str:
-        try:
-            return await hero_pool.generate_image(steam_id, count=count, theme=theme) or ""
-        except HeroPoolError as e:
-            raise ValueError(str(e))
-        except Exception:
-            logger.exception("英雄池生成失败")
-            return ""
-
     # 相同账号 + 相同档位 + 相同风格的并发查询共享同一次执行
-    return await run_single_flight(("hero_pool", steam_id, count, theme), _build)
+    return await _render_cached_image(
+        ("hero_pool", steam_id, count, theme),
+        "英雄池",
+        lambda: hero_pool.generate_image(steam_id, count=count, theme=theme),
+        user_errors=(stratz.StratzError,),
+    )
 
 
 async def pro_image(group_id, arg: str, theme: str | None = None) -> str:
-    """生成玩家与职业选手的对战记录图片（按队友+对手总场次降序取前 10）。
+    """生成与职业选手的对战记录图（前 10）；失败返回空串，参数错误抛 ValueError。
 
-    arg 可为 steam_id（纯数字）或本群已订阅玩家昵称；
-    theme 留空时使用配置项 d2w_image_theme（默认 light）。
-    参数解析失败 / 未配置 Token 时抛出 ValueError（提示文案），生成失败返回空串。
-    相同账号 + 相同风格的并发查询通过 single-flight 共享同一次执行（不重复抓取）。
+    arg 为 steam_id 或本群昵称。
     """
     theme = normalize_image_theme(theme)
     steam_id = _resolve_steam_id(group_id, arg)
-
-    async def _build() -> str:
-        try:
-            return await pro_peers_gen.generate_image(steam_id, theme=theme) or ""
-        except ProPeersError as e:
-            raise ValueError(str(e))
-        except Exception:
-            logger.exception("职业选手对战记录生成失败")
-            return ""
-
-    return await run_single_flight(("pro_peers", steam_id, theme), _build)
+    return await _render_cached_image(
+        ("pro_peers", steam_id, theme),
+        "职业选手对战记录",
+        lambda: pro_peers_gen.generate_image(steam_id, theme=theme),
+        user_errors=(stratz.StratzError,),
+    )
 
 
 async def playmates_image(group_id, arg: str, theme: str | None = None) -> str:
-    """生成玩家开黑记录图片（最常一起开黑的队友，按共同场次降序取前 20）。
+    """生成开黑记录图（前 20）；失败返回空串，参数错误抛 ValueError。
 
-    arg 可为 steam_id（纯数字）或本群已订阅玩家昵称；
-    theme 留空时使用配置项 d2w_image_theme（默认 light）。
-    参数解析失败 / 未配置 Token 时抛出 ValueError（提示文案），生成失败返回空串。
-    相同账号的并发查询通过 single-flight 共享同一次执行（不重复抓取）。
+    arg 为 steam_id 或本群昵称。
     """
     theme = normalize_image_theme(theme)
     steam_id = _resolve_steam_id(group_id, arg)
-
-    async def _build() -> str:
-        try:
-            return await playmates_gen.generate_image(steam_id, theme=theme) or ""
-        except PlaymatesError as e:
-            raise ValueError(str(e))
-        except Exception:
-            logger.exception("开黑记录生成失败")
-            return ""
-
-    return await run_single_flight(("playmates", steam_id, theme), _build)
+    return await _render_cached_image(
+        ("playmates", steam_id, theme),
+        "开黑记录",
+        lambda: playmates_gen.generate_image(steam_id, theme=theme),
+        user_errors=(stratz.StratzError,),
+    )
 
 
 async def xiaoheihe_overview_image(group_id, arg: str, theme: str | None = None) -> str:
-    """生成小黑盒「最近战绩」图片（玩家卡 / 近20场 / 比赛列表 / 常用英雄 / 生涯纪录）。
+    """生成小黑盒最近战绩图；失败返回空串，查不到玩家时抛 ValueError。
 
-    arg 可为 steam_id（纯数字）或本群已订阅玩家昵称；
-    theme 留空时使用配置项 d2w_image_theme（默认 light）。
-    数据与生成图均按 d2w_xiaoheihe_cache_seconds（默认 1 小时）缓存。
-    参数解析失败 / 查不到玩家时抛出 ValueError（提示文案），生成失败返回空串。
-    相同账号 + 相同风格的并发查询通过 single-flight 共享同一次执行。
+    数据与图片均按 d2w_xiaoheihe_cache_seconds 缓存。
     """
     theme = normalize_image_theme(theme)
     steam_id = _resolve_steam_id(group_id, arg)
-
-    async def _build() -> str:
-        try:
-            return await xiaoheihe_gen.generate_image(steam_id, theme=theme) or ""
-        except OverviewError as e:
-            raise ValueError(str(e))
-        except Exception:
-            logger.exception("小黑盒战绩图生成失败")
-            return ""
-
-    return await run_single_flight(("xiaoheihe_overview", steam_id, theme), _build)
+    return await _render_cached_image(
+        ("xiaoheihe_overview", steam_id, theme),
+        "小黑盒战绩图",
+        lambda: xiaoheihe_gen.generate_image(steam_id, theme=theme),
+        user_errors=(OverviewError,),
+    )
 
 
 # ---------------------------------------------------------------
@@ -454,60 +419,6 @@ async def _cn_rosters_report(key: str) -> str:
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------
-# 群播报
-# ---------------------------------------------------------------
-# 向 OneBot 后端发消息的超时上限（秒）。OneBot v11 适配器另有 api_timeout（默认 30 秒），
-# 但它可被配置改大或关掉，且每次发送各自计时：群多、bot 多时一轮串行发送的总耗时仍需兜底，
-# 否则协议端假死会把整轮轮询（乃至之后每一轮）一直挂住。超时后放弃本次发送并记日志。
-_SEND_TIMEOUT = 60
-
-
-async def _send_group(bot: Bot, gid: str, msg: Message) -> None:
-    """向群发一条消息，超时即放弃（后端不响应时不无限等待）。"""
-    await asyncio.wait_for(bot.send_group_msg(group_id=int(gid), message=msg), _SEND_TIMEOUT)
-
-
-async def _broadcast(text: str | None, filter_key: str | None = None) -> None:
-    """向群广播一条文本消息。filter_key 为 "subscribe_news"/"subscribe_ti" 时按开关过滤。"""
-    if not text:
-        return
-    bots = get_bots()
-    if not bots:
-        return
-    all_groups = store.get_all_groups()
-    msg = Message(f"[DOTA2]{text}")
-    for gid, info in all_groups.items():
-        # 白名单/黑名单模式外的群不播报
-        if not is_group_allowed(gid):
-            continue
-        if filter_key and not info.get(filter_key, True):
-            continue
-        for bot in bots.values():
-            try:
-                await _send_group(bot, gid, msg)
-            except Exception:
-                logger.exception(f"广播消息到群 {gid} 失败")
-
-
-async def _broadcast_groups(text: str | None, gids) -> None:
-    """向指定的若干群广播一条文本消息（用于按战队订阅关系定向播报）。"""
-    if not text:
-        return
-    bots = get_bots()
-    if not bots:
-        return
-    msg = Message(f"[DOTA2]{text}")
-    for gid in gids:
-        if not is_group_allowed(gid):
-            continue
-        for bot in bots.values():
-            try:
-                await _send_group(bot, gid, msg)
-            except Exception:
-                logger.exception(f"广播战队名单变动到群 {gid} 失败")
-
-
 async def _fetch_history(player: Player):
     """获取玩家最近一场比赛（Steam 优先，战绩被隐藏时按门控回退小黑盒）。
 
@@ -575,7 +486,7 @@ def _report_streaks(player_list: list, match_info: dict) -> dict[int, tuple[int,
 
 async def _report_match(match: NewMatch) -> None:
     """生成并发送一场比赛的战报（图片 + 一句话锐评）。"""
-    # 连胜/连败是锐评的一个维度：按本局结果就地累加纪录（不额外抓取数据）
+    # 连胜/连败用于锐评，按本局结果就地累加
     try:
         streaks = _report_streaks(match.players, match.match_info)
     except Exception:
@@ -590,8 +501,7 @@ async def _report_match(match: NewMatch) -> None:
 
     pic = None
     try:
-        # 复用阶段二已拉取的 match_info，避免图片生成时再次请求 OpenDota；
-        # 定时播报不接入小黑盒补充匿名玩家数据，避免额外请求拖慢播报
+        # 复用阶段二的详情；定时播报不补充匿名玩家数据
         pic = await match_builder.generate_report_img(
             match.match_id, force=True, match_data=match.match_info, supplement_anonymous=False
         )
@@ -605,15 +515,7 @@ async def _report_match(match: NewMatch) -> None:
         msg += Message(text)
     if not msg:
         return
-
-    bots = get_bots()
-    if not bots:
-        return
-    for bot in bots.values():
-        try:
-            await _send_group(bot, match.gid, msg)
-        except Exception:
-            logger.exception(f"发送战报到群 {match.gid} 失败")
+    await send_group_message(match.gid, msg, log_prefix="发送战报")
 
 
 # ---------------------------------------------------------------
@@ -628,82 +530,7 @@ async def poll_ti_results() -> None:
     except Exception:
         logger.exception("TI 结果监听失败")
         return
-    await _broadcast(msg, "subscribe_ti")
-
-
-# 新闻去重状态：记录已见过的新闻 gid，持久化到 data/news_state.json。
-# 停机期间发布的新闻在恢复后按 gid 补播，不会因重启丢基线而错过；
-# 首次部署（无状态文件）仅建立基线，不播报历史新闻。
-# 全部群退订新闻时删除基线文件：停订期间不积累状态，
-# 重新订阅后首轮轮询按首次运行重建基线，不会补播停订期间的旧新闻。
-_NEWS_STATE_FILE: Path = DATA_DIR / "news_state.json"
-_NEWS_STATE_MAX = 50  # 状态文件最多保留的 gid 数（防无限增长）
-
-
-def _sync_news_baseline(key: str) -> None:
-    """新闻订阅开关变化后同步基线：已无任何订阅群时删除基线文件。"""
-    if key != "news" or store.any_group_subscribed("subscribe_news"):
-        return
-    try:
-        _NEWS_STATE_FILE.unlink(missing_ok=True)
-    except Exception as e:
-        logger.warning(f"新闻基线删除失败：{e}")
-
-
-def _load_news_state() -> dict:
-    """读取新闻去重状态 {'seen_gids': [...]}；文件缺失/损坏返回空表（视为首次运行）。"""
-    data = load_cache(_NEWS_STATE_FILE)
-    return data if isinstance(data, dict) else {}
-
-
-def _save_news_state(seen: list[str]) -> None:
-    _NEWS_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _NEWS_STATE_FILE.write_text(
-        json.dumps({"version": 1, "seen_gids": seen[-_NEWS_STATE_MAX:]}, ensure_ascii=False),
-        encoding="utf-8",
-    )
-
-
-async def poll_news() -> None:
-    """监听 DOTA2 官方新闻，出现新头条时广播。
-
-    每次拉取最新 5 条，按 gid 与本地状态去重后把未播报过的补播出去
-    （旧→新顺序，合并为一条消息）；停机期间发布的新闻会在恢复后补上。
-    无群订阅时不发请求（基线已在退订时删除，重新订阅按首次运行重建）。
-    """
-    if not store.any_group_subscribed("subscribe_news"):
-        return
-    try:
-        news = await request_news()
-    except Exception:
-        logger.exception("获取 DOTA2 新闻失败")
-        return
-    events = [e for e in ((news or {}).get("events") or []) if e.get("gid") and e.get("event_name")]
-    if not events:
-        return
-
-    state = _load_news_state()
-    first_run = not state
-    seen: list[str] = [str(g) for g in (state.get("seen_gids") or [])]
-    seen_set = set(seen)
-
-    # 未播报过的新闻（接口按时间倒序，reversed 后为旧→新）
-    fresh = [e for e in reversed(events) if str(e["gid"]) not in seen_set]
-    # 无论是否播报都先更新并持久化已见列表（播报失败不重发，避免刷屏）
-    for e in events:
-        gid = str(e["gid"])
-        if gid not in seen_set:
-            seen.append(gid)
-            seen_set.add(gid)
-    try:
-        _save_news_state(seen)
-    except Exception as e:
-        logger.warning(f"新闻状态写入失败：{e}")
-
-    if first_run or not fresh:
-        return
-    lines = [f"[news] {e['event_name']} www.dota2.com/newsentry/{e['gid']}" for e in fresh]
-    await _broadcast("\n".join(lines), "subscribe_news")
+    await broadcast_text(msg, "subscribe_ti")
 
 
 async def poll_new_matches() -> None:
@@ -725,23 +552,17 @@ async def poll_new_matches() -> None:
         unique_players.setdefault(player.short_steamID, player)
     unique_list = list(unique_players.values())
 
-    # 阶段一会就地改动「战绩隐藏次数」（累加 / 归零），先记录初值，
-    # 便于本轮结束时判断是否需要落盘（见末尾 store.save）。
-    # 按对象身份去重：同一账号在多个群各有实例，两处都会被改动。
+    # 阶段一会改动隐藏计数，先记录初值用于判断是否落盘
     hidden_before = [(p, p.hidden_fail_count) for p in {id(p): p for _, p in watched}.values()]
 
-    # 阶段一：并发获取去重后玩家的最近比赛 ID
-    # （Steam 优先；战绩被隐藏且累计到阈值时回退小黑盒 overview，见 match_history）
+    # 阶段一：并发拉取最近比赛（Steam 优先，隐藏战绩按门控回退小黑盒）
     fetched = await asyncio.gather(
         *(_fetch_history(player) for player in unique_list),
         return_exceptions=True,
     )
     history = dict(zip((p.short_steamID for p in unique_list), fetched))
 
-    # 同一账号被多个群订阅时，Player 是各群独立的实例，而阶段一只更新了参与抓取的
-    # 那个实例；这里把门控状态同步给同账号的其它实例，避免各群计数不一致
-    # （否则代表实例被删掉后计数会「凭空归零」，或各群落盘的值互相矛盾）。
-    # 小黑盒 ID 取各实例的较大者：它只应单调前进，不该因某群曾关闭播报而落后。
+    # 同一账号在各群是不同实例，把门控状态同步给其余实例；小黑盒 ID 取较大者
     for _, player in watched:
         source = unique_players.get(player.short_steamID)
         if source is None or source is player:
@@ -753,22 +574,16 @@ async def poll_new_matches() -> None:
 
     # 汇总新比赛（同一群、同一场比赛的订阅玩家合并到同一个 NewMatch）
     new_matches: dict[tuple[str, int], NewMatch] = {}
-    # 本群已经播报过、因此不再重复播报的比赛。这里仍要补记这些玩家的胜负，
-    # 否则他们的连胜/连败会漏掉这一场（见后面的 quiet 处理）。
+    # 本群已播报过的比赛：不重播，但仍要补记胜负
     quiet: list[tuple[Player, RecentMatch]] = []
     for gid, player in watched:
         result = history.get(player.short_steamID)
-        # 只播报「比已知最新更新」的比赛：两个数据源的最近一场并不同步，
-        # 小黑盒可能滞后返回已播报过的旧比赛，靠 ID 比较挡掉（见 is_newer_match）
+        # 只处理比已知最新更新的比赛，挡掉小黑盒滞后返回的旧比赛
         if isinstance(result, Exception) or not result:
             continue
         if result.match_id <= latest_known_match_id(player):
             continue
-        # 群维度去重：同一场比赛只要有本群任一玩家播过，就不再重播。
-        # 玩家维度的 last_DOTA2_match_ID 挡不住这种重复 —— 战绩被隐藏的玩家要等
-        # 门控攒够轮次才回退小黑盒，等它拿到 ID 时，同群的公开玩家早已把这场播完了
-        # （那时该隐藏玩家的 last_DOTA2_match_ID 还是 0，看起来仍是"新比赛"）。
-        # 不播报，但这一场的胜负还得记到他头上，否则连胜/连败会漏一场。
+        # 群维度去重：同群任一人播过即跳过，但这一场仍要计入该玩家连胜/连败
         if result.match_id <= store.get_last_reported_match_id(gid):
             quiet.append((player, result))
             continue
@@ -778,8 +593,7 @@ async def poll_new_matches() -> None:
         )
         match.players.append(player)
 
-    # 战绩隐藏次数也会变化（累加 / 归零），即使本轮没有新比赛也要落盘，
-    # 否则重启后门控计数丢失，可能刚启动就立刻访问小黑盒
+    # 隐藏计数可能已变化，即使无新比赛也要落盘
     hidden_changed = any(p.hidden_fail_count != count for p, count in hidden_before)
 
     if not new_matches and not quiet:
@@ -787,13 +601,7 @@ async def poll_new_matches() -> None:
             store.save()
         return
 
-    # 阶段二：并发获取每场新比赛的详情。
-    # 比赛 ID 来自小黑盒时必须用小黑盒详情接口：这类玩家的战绩在 OpenDota 里是匿名的，
-    # 拿 OpenDota 数据会定位不到本人（详见 request_match_info）。
-    # 同一场比赛被多个群订阅时只拉取一次，因此按比赛 ID 去重。
-    # 键带上数据源：同一场比赛可能一路由公开玩家走 Steam 拿到、另一路由隐藏战绩
-    # 玩家走小黑盒拿到，两个来源的详情并不等价（OpenDota 里隐藏玩家的 account_id
-    # 可能缺失，用它判不出胜负），因此两个来源分别取。
+    # 阶段二：按（比赛 ID, 数据源）并发拉取详情；两源数据不等价，不能共用
     wanted: dict[tuple[int, str], None] = {}
     for match in new_matches.values():
         wanted[(match.match_id, match.source)] = None
@@ -810,8 +618,7 @@ async def poll_new_matches() -> None:
         match.match_info = info_map.get((match.match_id, match.source))
         if not match.has_valid_info():
             continue
-        # 先记下群级已播报水位：即使本轮播报过程出问题，也不会在下一轮重播同一场。
-        # 只增不减，旧比赛（小黑盒滞后下发）把水位拉低反而会造成重播。
+        # 先推进群级水位，避免播报异常时下一轮重播
         store.set_last_reported_match_id(match.gid, match.match_id)
         for player in match.players:
             player.last_DOTA2_match_ID = match.match_id
@@ -824,10 +631,7 @@ async def poll_new_matches() -> None:
             continue
         await _report_match(match)
 
-    # 同群同场不再重复播报，但被跳过的玩家这一场的胜负仍要入账。
-    # 典型场景：隐藏战绩的玩家要攒够门控轮次才从小黑盒拿到 ID，等它拿到时，
-    # 同群的公开玩家早已把这一场播完；若直接把结果丢掉，他的连胜/连败就漏了
-    # 这一场，之后每一场都会跟着错位。这里只推进水位、累加纪录，不发消息。
+    # 被跳过的比赛只推进水位并累加纪录，不发消息
     for player, result in quiet:
         info = info_map.get((result.match_id, result.source))
         if not isinstance(info, dict) or "radiant_win" not in info:
@@ -905,6 +709,6 @@ async def poll_roster_changes() -> None:
         names = await pro_names.display_names(ids=sorted(added | removed))
         msg = _roster_change_message(info["name"], sorted(added), sorted(removed), names)
         if msg:
-            await _broadcast_groups(msg, subs[team_id])
+            await broadcast_text_to_groups(msg, subs[team_id])
     if changed:
         team_roster.save_state(state)

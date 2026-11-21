@@ -1,17 +1,7 @@
-"""
-抓取 The International 2026 (TI15) 最新比赛胜负结果，并按赛程阶段生成战报图片。
+"""TI 赛事数据：拉取 Valve 官方赛果并按阶段生成战报图片。
 
-数据来源：Valve 官方赛事 API
-  GET https://www.dota2.com/webapi/IDOTA2League/GetLeagueData/v001?league_id=19719&delay_seconds=0
-
-说明：
-  - TI 2026 联赛 ID 为 19719。
-  - 数据嵌套结构：node_groups[].node_groups[].nodes[]
-      · nodes[] 中的每一项代表一场 BO 系列赛（series）
-      · team_1_wins / team_2_wins 为该系列当前比分
-      · matches[] 里每局含 winning_team_id 与 match_id
-      · team_standings[] 提供 team_id -> 队伍名称/tag 的映射
-  - 运行依赖：抓取赛果仅用标准库；生成战报图片需额外安装 Pillow 与 Playwright。
+接口：IDOTA2League/GetLeagueData（league_id=19719，TI 2026）。
+结构：node_groups[].node_groups[].nodes[]，每个 node 为一场 BO 系列赛。
 """
 
 import asyncio
@@ -65,9 +55,8 @@ HEADERS = {
     "Referer": _cfg.TI_REFERER,
 }
 
-# ==================== Steam Web API（实时单局详情，需要 key） ====================
-# 可通过 https://steamcommunity.com/dev/apikey 申请，或用环境变量 STEAM_API_KEY 指定。
-# 优先使用独立配置 D2W_TI_STEAM_API_KEY，其次环境变量 STEAM_API_KEY，最后回退 D2W_STEAM_API_KEY。
+# ==================== Steam Web API（实时单局详情） ====================
+# 优先 D2W_TI_STEAM_API_KEY，其次 STEAM_API_KEY，最后回退 D2W_STEAM_API_KEY
 STEAM_API_KEY = (
     _cfg.config.d2w_ti_steam_api_key
     or os.environ.get("STEAM_API_KEY")
@@ -305,9 +294,7 @@ def recommend_poll_interval(node_groups, now=None):
         if node.get("has_started"):
             live = True
             continue
-        # 未开始：只要 scheduled_time 是有效未来时间就纳入“最近开赛”判断。
-        # 瑞士轮下一轮对阵未公布时 node 的 team_id 为 0，但仍携带轮次开赛时间，
-        # 若跳过这些占位节点，将无法提前识别“即将开赛”，导致间歇期误判为空闲。
+        # 未开始时 team_id 可能为 0，但 scheduled_time 仍有效，不能跳过
         st = node.get("scheduled_time") or 0
         if st > now and (nearest is None or st < nearest):
             nearest = st
@@ -325,32 +312,9 @@ def recommend_poll_interval(node_groups, now=None):
 
 
 async def watch_latest_result(mode="series", debug=False):
-    """监控 TI2026 最新比赛结果，返回自上次以来新结束的结果字符串（异步）。
+    """返回自上次以来新结束的 TI 结果；无新结果或未到间隔时返回空串。
 
-    函数内部通过时间门控实现“根据赛程时间动态调整间隔”：每次真正拉取数据后，
-    根据赛程计算下一次允许拉取的时间（recommend_poll_interval）。外部以固定小间隔
-    （如 10 秒）调用时，未到下次拉取时间会直接返回空字符串，不发起 API 请求。
-
-    参数 mode:
-      - 'series'（默认）：只返回系列赛（BO3/BO5）终局结果。
-        行格式: '{战队A} {比分A}:{比分B} {战队B}'，如 'TEAM VISION 2:1 Team Falcons'
-      - 'game'：只返回单局比赛结果（附该局结束后的系列赛比分）。
-        行格式: '{战队A} {比分A}:{比分B} {战队B}'，如 'TEAM VISION 1:0 Team Falcons'
-
-    参数 debug:
-      - 默认 False 关闭；设为 True 时打印动态轮询间隔 DEBUG 日志（当前时间 / 动态间隔 / 下次拉取时间）。
-
-    返回:
-      - 多个结果用换行连接，仅第一行带 [TI] 前缀，其余行不带。
-      - 首次调用仅建立基线，返回空字符串 ''。
-      - 未到动态间隔 / 无新结果 / 获取数据失败时返回 ''。
-
-    用法:
-        result = await watch_latest_result(mode='series')
-        result = await watch_latest_result(mode='game', debug=True)
-        if result:
-            for line in result.split("\\n"):
-                ...
+    mode='series' 只看系列赛终局，mode='game' 看单局；首次调用只建基线。
     """
     global _watch_seen_series, _watch_baseline_done, _watch_seen_games, _watch_game_baseline_done
     global _watch_next_check_ts, _watch_interval
@@ -1121,9 +1085,8 @@ async def _league_data_cached_or_fetch():
         return None
 
 
-# ==================== XXH64（纯 Python 实现，无第三方依赖） ====================
-# 用于对联赛数据文件计算确定性摘要，作为战报图片文件名的后缀，
-# 便于"同一份数据只生成一次图片"的幂等缓存。
+# ==================== XXH64（纯 Python，无第三方依赖） ====================
+# 用于生成战报图片名的确定性后缀，同一份数据只生成一次图片
 _XXH64_P1 = 0x9E3779B185EBCA87
 _XXH64_P2 = 0xC2B2AE3D27D4EB4F
 _XXH64_P3 = 0x165667B19E3779F9
@@ -1331,16 +1294,9 @@ def _logo_data_uri_cached(tid, url):
 
 
 async def _prepare_report(data, output_path, prefix):
-    """读取本地缓存数据与 Liquipedia logo 映射，并解析输出路径。
+    """统一战报前置逻辑：取数据、logo 映射、幂等输出路径。
 
-    统一三个战报图片生成器的前置逻辑（数据读取 + logo 映射 + 幂等命名）。
-    优先读取本地缓存 data/dota2_ti.json；本地无缓存时才回退到官方 API 抓取。
-    logo 映射优先读取本地缓存 images/logo/liquipedia_mapping.json。
-    命名基于 _league_data_xxh64 对"关键字段（对阵/比分/排名）"的摘要，
-    易变字段（活跃时间戳、奖金池、录像等）变化不会导致重新生成图片。
-    返回 (data, lp_logos, output_path, cached)：
-      · data 为 None 表示无可用缓存（已打印错误，调用方应直接返回 None）；
-      · cached 为 True 表示该数据的图片已生成过，output_path 可直接复用返回。
+    返回 (data, lp_logos, output_path, cached)；data 为 None 表示无可用缓存。
     """
     auto_named = output_path is None
 
@@ -1420,31 +1376,10 @@ async def _screenshot_html(html, output_path, width, height):
 
 
 async def generate_swiss_standings_image(output_path=None, data=None):
-    """独立生成瑞士轮积分战报图片 —— 严格模仿 Liquipedia 样式（异步）。
+    """生成瑞士轮积分战报图片；失败返回 None。
 
-    内部自动获取 TI2026 联赛数据，无需外部传入 data（也可通过 data 参数复用已获取的数据）。
-    output_path 可选，省略时自动保存到 output/ti2026_swiss_YYYYMMDD_HHMM.png。
-    返回生成图片的绝对路径；失败返回 None。
-
-    用法:
-        path = await generate_swiss_standings_image()
-
-    参考: https://liquipedia.net/dota2/The_International/2026/Group_Stage#Standings
-    关键样式要素：
-      · 卡片：近白底 #FDFCFF + 1px rgba(0,0,0,0.12) 边框 + 8px 圆角
-      · 字体："Open Sans", sans-serif, 15px
-      · 表头：rgba(0,0,0,0.04) 浅灰底，深灰加粗字，padding 8px 12px
-      · 行高 65px，分隔线用 inset box-shadow 1px rgba(0,0,0,0.08)
-      · 左侧 4px 状态色条：up 绿 rgb(0,138,0) / stay 黄褐 rgb(150,111,0) / down 红 rgb(208,38,38)
-      · 排名：20x20 圆角小方块，rgba(0,0,0,0.04) 底，11px 加粗
-      · 队伍列：透明背景 logo(高25px) + 蓝色队名 rgb(13,97,164)
-      · Matches 列加粗
-      · Round 单元格：垂直 flex（比分标签在上 + 对手 logo 在下）
-        - 比分标签：grid 三段式，padding 4px，圆角 4px，font-size 11px
-        - 胜：浅绿底 rgb(214,245,214) + 深绿字 rgb(20,82,20)，我方分加粗
-        - 负：浅红底 rgb(253,235,235) + 红字 rgb(184,20,20)
-        - 平/LIVE：浅灰底 rgba(0,0,0,0.08) + 灰字 rgb(112,113,118)
-        - 未开赛：空单元格
+    内部自动取联赛数据，output_path 省略时保存到 output/。
+    样式参考 Liquipedia Group Stage，具体数值见下方 CSS。
     """
     data, lp_logos, output_path, cached = await _prepare_report(data, output_path, "ti2026_swiss")
     if not data:
@@ -1707,8 +1642,8 @@ table {
     return await _screenshot_html(html, output_path, 1200, 900)
 
 
-# ==================== 国际邀请赛正赛对阵图战报图片生成 ====================
-# 布局严格参考 Liquipedia div 版对阵图（Brackets.less + 8U4L2DSL1D 模板）：
+# ==================== 国际邀请赛正赛对阵图 ====================
+# 布局参考 Liquipedia div 版对阵图：
 #   https://liquipedia.net/dota2/The_International/2026/Main_Event
 
 # Liquipedia bracket CSS 变量（取自页面 --match-width 等）
@@ -1719,18 +1654,14 @@ _BRK_ROUND_GAP = 20  # --round-horizontal-margin：轮次列水平间距
 # 同轮相邻比赛的纵向节距：盒子下方留 28px 空隙，容纳未开始比赛的开赛时间行(14px)并保留呼吸空间
 _BRK_PITCH = _BRK_MATCH_H + 28
 _BRK_HEADER_H = 25  # 轮次表头高度
-# Liquipedia 流式布局实测（TI2025 页面 inline style + 权威渲染测量）：
-#   round-header margin: 8px 0 2px；UB round-lower margin-top: 0；LB round-lower margin-top: 12px
-#   config.matchMargin = opponentHeight/4 = 6px（每个比赛盒的上下外边距）
+# 以下间距取自 Liquipedia 渲染实测
 _BRK_HEADER_TOP = 8  # round-header 上边距
 _BRK_HEADER_GAP = 2  # round-header 下边距
 _BRK_MATCH_MARGIN = _BRK_OPP_H // 4  # 比赛盒上下外边距（matchMargin = 6）
 _BRK_LB_LOWER_MARGIN = 12  # LB round-lower 顶部间距
 # 胜者组比赛区顶部 = 8(表头) + 25(表头高) + 2(表头底边距) + 6(比赛上边距) = 41
 _BRK_BODY_TOP = _BRK_HEADER_TOP + _BRK_HEADER_H + _BRK_HEADER_GAP + _BRK_MATCH_MARGIN
-# 胜者组底 → 败者组比赛区顶 = 6 + 8 + 25 + 2 + 12 + 6 + 额外 10 = 69。
-# 额外间距为胜者组底部未开始比赛的开赛时间行(14px)留足空隙，
-# 避免其顶到下方败者组表头/第 1 轮比赛。
+# 胜者组底到败者组顶额外留 10px，避开未开始比赛的时间行
 _BRK_REGION_EXTRA = 10
 _BRK_REGION_GAP = (
     _BRK_MATCH_MARGIN
@@ -1891,9 +1822,7 @@ def build_bracket_model(node_groups):
     ub_bottom = max((top[n] + _BRK_MATCH_H for n in ub_ids), default=0)
     y_lb = ub_bottom + _BRK_REGION_GAP
 
-    # 败者组：按列推导，仅用 LB 馈送者定位。
-    # 移植 Liquipedia alignMatchWithLowerNodes：单 LB 馈送者且对手在中间槽时，
-    # 目标槽中心与馈送者盒中心等高（连线退化为直线）；多个馈送者取中间对齐。
+    # 败者组：按列推导，单 LB 馈送者等高对齐，多个取中间
     lb_rounds = {}
     for n in lb_ids:
         lb_rounds.setdefault(col[n], []).append(n)
@@ -1960,17 +1889,7 @@ def build_bracket_model(node_groups):
             {"x": gc * (_BRK_MATCH_W + _BRK_ROUND_GAP), "y": _BRK_HEADER_TOP, "options": ["总决赛"]}
         )
 
-    # ---- 连接线（移植 Liquipedia Bracket.lua NodeLowerConnectors/NodeConnector）----
-    # 官方几何（实测 TI2025 渲染页 + NodeConnector 源码）：
-    #   · 晋级线（树内边 / 进决赛）：三段肘形线，画在“馈送盒右缘 → 目标盒左缘”之间。
-    #       左水平段：馈送盒右缘 → joint（固定 w=10）
-    #       垂直段  ：x = 馈送盒右缘 + 8（官方 jointLeft=9，线宽 2）
-    #       右水平段：joint → 目标盒左缘（相邻列为 12px；跨列时跨越整列，
-    #                 如 SF(列1)→UBF(列3) 为 212px，绕过中间的 LBSF）
-    #     两中心等高时退化为单段水平线。
-    #   · 跨区边（UB 败者落入 LB）：仅画 10px 短线头（stub），官方不画跨区长线
-    #     （实测：LB QF/LB Final 的外来槽位只有 stub）。
-    #   · LB 第一轮（无树内馈送）：不画任何线（官方无 connectors 容器）。
+    # ---- 连接线：晋级线为三段肘形，跨区只画 10px 短线，LB 第一轮不画 ----
     lines = []
     GAP = _BRK_ROUND_GAP  # 20px 间隙
 
@@ -2187,9 +2106,7 @@ def _bracket_opponent_html(n, slot, is_last, team_info, logo_uris):
 def _render_bracket_html(model, team_info, logo_uris):
     """按 Liquipedia div 对阵图样式渲染完整 HTML。"""
 
-    # 表头：直接挂在 .brkts-bracket 上（不被内容层偏移影响、不被比赛盒遮挡）。
-    # 每个表头输出 Liquipedia 三档变体（.brkts-header-option），由内嵌 JS 按
-    # 官方算法从最长到最短选取能放入宽度的变体。
+    # 表头直接挂在 .brkts-bracket 上；三档变体由内嵌 JS 选最合适的一档
     header_parts = []
     for h in model["headers"]:
         opts = h["options"]
@@ -2286,17 +2203,10 @@ async def generate_main_event_image(output_path=None, data=None):
 
 
 # ==================== Elimination Round（瑞士轮晋级赛）对阵图 ====================
-# 布局参考 Liquipedia Group Stage 页的 Elimination Round（div 版）：
+# 布局参考 Liquipedia Group Stage 页：
 #   https://liquipedia.net/dota2/The_International/2026/Group_Stage
-# 实测几何（Liquipedia 官方 div 渲染）：两列表头 + 单列比赛 + 右侧晋级列，
-#   每场比赛右缘有一条水平连接线通往对应晋级席。
 
-# Liquipedia Elimination Round 几何常量（实测 _seg_out.txt）：
-#   · 表头 y=10，高度 25
-#   · 比赛列 x=2，宽 180(队名区)+22(比分区)=202，高 48（两支 24px 队伍）
-#   · 晋级列 x=202，宽 180，高 24，垂直居中于比赛盒中心
-#   · 连接线 x=182（队名区右缘），宽 20，高 2，位于比赛盒中线
-#   · 比赛纵向节距 60px
+# 几何常量（实测）：两列表头 + 单列比赛 + 右侧晋级列
 _ELIM_PAD = 2  # bracket padding
 _ELIM_HEADER_TOP = 10  # 表头顶部 y
 _ELIM_HEADER_H = 25  # 表头高度
@@ -2604,15 +2514,9 @@ _STAGE_GENERATORS = {
 
 
 async def generate_league_report_image(output_path=None, stage=None):
-    """战报图片统一入口：按指定阶段生成对应图片；未指定时自动判断当前赛程阶段（异步）。
+    """按阶段生成 TI 战报图片；stage 为空时自动判断当前阶段。
 
-      · stage=None/'auto'  自动判断当前阶段（最新阶段）
-      · stage='swiss'      小组赛（瑞士轮）
-      · stage='elimination_round'  瑞士轮晋级赛（Elimination Round）
-      · stage='main_event' 国际邀请赛正赛
-
-    数据优先从本地缓存 data/dota2_ti.json 读取；本地无缓存时才回退到官方 API 抓取。
-    返回生成图片的绝对路径；失败返回 None。
+    stage: auto / swiss / elimination_round / main_event；失败返回 None。
     """
     data = await _league_data_cached_or_fetch()
     if not data:

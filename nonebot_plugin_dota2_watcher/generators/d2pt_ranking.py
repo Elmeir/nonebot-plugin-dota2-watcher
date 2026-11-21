@@ -1,27 +1,20 @@
 """D2PT 五位置排行图：HTML + Playwright 渲染。
 
-版式与配色沿用 /出装、/战绩 的容器规范（core_build.THEMES）：
-五列并排（优势路 / 中路 / 劣势路 / 半辅助 / 纯辅助），不额外加标题或外框，
-每列最多展示综合评分前 15 的英雄；若某个位置数量不足 15，
-则所有位置统一按其中最少的位置数量截取，避免出现空行。
-
-列头图标取自 dota2protracker 的位置图标集（/static/pos/pos_1.svg 及其同源路径），
-以内联 SVG 绘制（随亮/暗主题换色，无网络依赖）；英雄图标由
-assets.load_hero_icon 按需下载并缓存。
+五列（1-5 号位），每列综合评分前 15；数量不足时各列统一截断。
+主题与容器规范复用 core_build.THEMES。
 """
 
 from __future__ import annotations
 
 import asyncio
 import html
-import io
 
 from nonebot.log import logger
 
 from .. import assets
 from ..config import DATA_DIR, OUTPUT_DIR, normalize_image_theme
 from ..utils import loadjson
-from . import shared_browser
+from . import html_render
 from .core_build import FONT_FAMILY, THEMES
 from .hero_pool import _ICON_PATHS
 from .hero_pool import THEMES as ICON_THEMES
@@ -309,13 +302,6 @@ def build_position_html(
 </html>"""
 
 
-async def _screenshot(document: str) -> bytes:
-    """在共享页面上渲染 HTML 并截取 #container（超采样由 context 的倍率决定）。"""
-    async with shared_browser.rendering(SUPERSAMPLE) as page:
-        await page.set_content(document, wait_until="load")
-        return await page.locator("#container").screenshot()
-
-
 async def generate_image(data: dict, theme: str | None = None, pos: str | int | None = None) -> str:
     """按解析后的位置数据渲染排行图，返回本地路径；数据为空时返回空串。
 
@@ -358,15 +344,7 @@ async def generate_image(data: dict, theme: str | None = None, pos: str | int | 
 
     if not document:
         return ""
-    png = await _screenshot(document)
-
-    from PIL import Image
-
-    img = Image.open(io.BytesIO(png)).convert("RGB")
-    width, height = img.size
-    img = img.resize((width // SUPERSAMPLE, height // SUPERSAMPLE), Image.LANCZOS)
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     out_path = OUTPUT_DIR / out_name
-    img.save(out_path)
+    await html_render.render_to_png(document, str(out_path), SUPERSAMPLE)
     logger.info(f"已生成 D2PT 排行图：{out_path}")
     return str(out_path)

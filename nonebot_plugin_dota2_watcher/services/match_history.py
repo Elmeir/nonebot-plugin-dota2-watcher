@@ -1,22 +1,9 @@
-"""订阅玩家「最近比赛」的获取：Steam 优先，战绩被隐藏时按门控回退小黑盒。
+"""订阅玩家的最近比赛：Steam 优先，战绩被隐藏时按门控回退小黑盒。
 
-为什么需要回退：Steam GetMatchHistory 对隐私资料玩家直接返回 status 15
-（战绩被隐藏），拿不到任何比赛 ID，该玩家就再也播报不了；而小黑盒 overview
-接口对同一玩家仍会下发匿名的比赛列表，可以从中取出最近一场的 match_id。
-
-为什么要门控：小黑盒接口对高频访问较敏感（风控）。因此只有连续 N 次
-（``d2w_hidden_fallback_threshold``，默认 10）都拿到 status 15 才访问一次，
-且每次尝试后计数归零 —— 最坏情况下每 N 轮轮询才访问一次小黑盒。
-
-为什么要按 ID 大小判重：两个数据源的「最近一场」并不同步（小黑盒可能滞后），
-若直接采用就会出现倒序播报旧比赛。统一用「必须比已知最新 ID 更新」判定，
-已知最新 ID 取 ``last_DOTA2_match_ID`` 与 ``last_xiaoheihe_match_id`` 的较大者，
-这样任一来源播报过的比赛都不会被另一个来源重复播报。
-
-顺带回写 overview 缓存：回退时拉到的 overview 仍会按 ``d2w_xiaoheihe_cache_seconds``
-（默认 1 小时）落盘，随后用户执行 /战绩 时直接命中同一份缓存，不重复请求。
-注意方向是单向的 —— 回退**不读**这份缓存（必须拿最新的比赛列表，见
-``_xiaoheihe_recent_match``），只有 /战绩 会读。
+Steam 对隐藏战绩返回 status 15；小黑盒 overview 仍能给出匿名比赛列表。
+为避免触发小黑盒风控，连续隐藏 N 次才回退一次，每次尝试后计数归零。
+两个数据源的「最近一场」可能不同步，统一按比赛 ID 大小判重。
+overview 只在回退时写缓存，供 /战绩 复用；回退本身不读缓存。
 """
 
 from __future__ import annotations
@@ -36,9 +23,7 @@ from ..datasources.request_match import (
 )
 from .player import Player
 
-# Steam GetMatchHistory 存在速率限制，并发过高易触发 429/503 导致请求失败，
-# 因此用信号量限制同批并发拉取比赛历史的数量（并发上限见 config.d2w_history_concurrency）。
-# 只约束 Steam 请求：小黑盒回退很稀疏，没必要占用该配额、拖慢其他人的 Steam 请求。
+# Steam 有速率限制，用信号量限制历史拉取并发；小黑盒回退稀疏，不占配额
 _history_semaphore = asyncio.Semaphore(config.d2w_history_concurrency)
 
 
@@ -110,8 +95,7 @@ async def _hidden_fallback(player: Player, error: Exception) -> RecentMatch:
         return RecentMatch()
 
     logger.info(f"{error}（连续第 {player.hidden_fail_count} 次，尝试回退小黑盒）")
-    # 无论本次是否拿到数据都归零：门控的目的是限制小黑盒访问频率，
-    # 失败也说明刚刚访问过，继续每轮重试反而更容易触发风控。
+    # 本次已访问过小黑盒（无论成败），计数归零，避免连续重试触发风控
     player.hidden_fail_count = 0
     try:
         return await _xiaoheihe_recent_match(player)
@@ -132,7 +116,7 @@ async def fetch_recent_match(player: Player, api_key: str | None = None) -> Rece
             match_id = await request_match_history(player, api_key)
     except MatchHistoryHidden as e:
         return await _hidden_fallback(player, e)
-    # Steam 能正常返回，说明战绩已不再隐藏：清零累计的隐藏次数
+    # Steam 正常返回，说明战绩不再隐藏，清零计数
     player.hidden_fail_count = 0
     return RecentMatch(match_id=match_id, source=SOURCE_STEAM)
 

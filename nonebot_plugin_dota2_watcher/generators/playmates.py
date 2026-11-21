@@ -1,29 +1,19 @@
-"""开黑记录图片生成器：渲染「XXX的开黑记录」列表图（HTML + Playwright，风格同 /出装）。
+"""开黑记录图片（HTML + Playwright，风格同 /出装）。
 
-数据来源见 ../datasources/playmates.py（STRATZ 同队 peers 聚合，按共同场次降序取前 20）。
-
-样式复用 /出装（core_build.py）的主题与容器规范：同一套 FONT_FAMILY / THEME，
-外层 #container 宽度 28.125rem、圆角卡片行、描述文字用 desc_color，
-胜率用胜/负配色（绿 / 红）突出。每行形如：
-
-    {头像} {名字} {场次} {胜率}
-
-头像为方形（2rem，轻微圆角），标题旁头像与行内头像保持一致。
+数据来源见 datasources/playmates.py，按共同场次降序展示前 20。
 """
 
 from __future__ import annotations
 
 import asyncio
-import io
 import os
-import time
 
 from nonebot.log import logger
 
 from .. import assets
 from ..config import OUTPUT_DIR, config, normalize_image_theme
 from ..datasources import playmates as ds
-from . import shared_browser
+from . import html_render
 from .core_build import FONT_FAMILY, THEME_DARK, THEME_LIGHT, THEMES
 
 # 头像渲染尺寸（像素）：2rem ≈ 38px，超采样 2x 后取 96px 源图足够清晰
@@ -168,27 +158,11 @@ async def generate_image(steam_id, theme: str | None = None, refresh: bool = Fal
     out_path = os.path.join(OUTPUT_DIR, f"playmates_{int(steam_id)}_{theme}.png")
 
     # 图片缓存：缓存期内复用已生成的图片，避免重复渲染
-    if (
-        not refresh
-        and os.path.exists(out_path)
-        and time.time() - os.path.getmtime(out_path) <= IMAGE_CACHE_SECONDS
-    ):
+    if not refresh and html_render.is_fresh(out_path, IMAGE_CACHE_SECONDS):
         logger.info(f"开黑记录图片缓存命中：{out_path}")
         return out_path
 
-    supersample = 2
-    # rendering() 保证「set_content → 截图」期间页面独占；load 事件返回后
-    # 布局与字体已就绪，无需再插入固定等待（逐像素验证完全一致）。
-    async with shared_browser.rendering(supersample) as page:
-        await page.set_content(html, wait_until="load")
-        png_bytes = await page.locator("#container").screenshot()
-
-    from PIL import Image
-
-    img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
-    w, h = img.size
-    img = img.resize((w // supersample, h // supersample), Image.LANCZOS)
-    img.save(out_path)
+    await html_render.render_to_png(html, out_path)
     logger.info(f"生成开黑记录：{player_name}（{steam_id}）共 {len(rows)} 位，展示前 {len(top)} 位")
     return out_path
 

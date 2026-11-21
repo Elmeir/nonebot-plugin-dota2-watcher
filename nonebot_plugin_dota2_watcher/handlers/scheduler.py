@@ -1,16 +1,10 @@
-"""定时任务：TI 赛事结果 / DOTA2 新闻 / 订阅玩家新比赛播报。
+"""定时任务：TI 赛果 / 官方新闻 / 战队名单 / 玩家新比赛。
 
-依赖 nonebot-plugin-apscheduler，请确保已安装。
-
-每个作业只负责「确保某一轮轮询在后台跑起来」，自身立即返回，因此：
-- 上一轮尚未结束时本轮直接跳过（debug 记录），不会再出现 APScheduler 的
-  "Execution of job ... skipped: maximum number of running instances reached" 警告；
-- 单轮超过 _CYCLE_TIMEOUT 秒会被取消并告警，避免某次请求一直等不到结果（数据源无响应、
-  协议端不回包等）后该任务从此每轮都被跳过、播报彻底停摆。
+每个作业只启动后台轮询并立即返回：上一轮未结束则跳过本轮；
+单轮超过 _CYCLE_TIMEOUT 秒会被取消并告警。
 """
 
-# 下方 require() 必须先于 nonebot_plugin_apscheduler 的导入执行，导入语句因此被
-# require() 分隔成两段：豁免 E402（导入不在文件顶部）与 I001（导入块未排序）。
+# require() 必须先执行，导入因此分两段：豁免 E402 与 I001
 # ruff: noqa: E402, I001
 
 import asyncio
@@ -24,10 +18,9 @@ from nonebot.log import logger
 from nonebot_plugin_apscheduler import scheduler
 
 from ..config import config
-from ..services import service
+from ..services import news, service
 
-# 单轮轮询的最长执行时间（秒）：正常一轮只有几秒到一分钟，该值仅用于兜底「卡死」，
-# 超时即取消本轮，让下一轮重新开始，而不是让任务永久停在未完成状态。
+# 单轮最长执行时间，超时取消本轮，避免任务永久卡住
 _CYCLE_TIMEOUT = 900
 
 # 正在执行的轮询：任务名 -> 后台任务
@@ -90,7 +83,7 @@ if config.d2w_news_enabled:
     )
     async def watch_news() -> None:
         """监听 DOTA2 官方新闻，出现新头条时广播。"""
-        _dispatch("watch_news", service.poll_news)
+        _dispatch("watch_news", news.poll_news)
 
 
 # ---------------------------------------------------------------

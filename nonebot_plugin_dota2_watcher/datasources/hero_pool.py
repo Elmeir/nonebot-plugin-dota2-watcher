@@ -1,29 +1,21 @@
-"""Stratz 英雄池数据源：GraphQL 拉取玩家最近比赛英雄与位置占比，带本地缓存。
+"""Stratz 英雄池数据源：玩家最近比赛的英雄与位置占比。
 
-接口：https://stratz.com/api （GraphQL 端点 /graphql），使用 Bearer Token 鉴权。
-Token 配置：config.json 的 d2w_stratz_token，或环境变量 D2W_STRATZ_TOKEN / STRATZ_TOKEN。
-英雄头像来源：https://cdn.stratz.com/images/dota2/heroes/{short}_icon.png
-
-每次调用先尝试抓取 API；抓取成功按 steam 账号缓存到 data/hero_pool/，
-抓取失败（网络/限流）才回退本地缓存（缓存不设时间限制）。
+接口见 datasources/stratz.py；Token 为 d2w_stratz_token 或 D2W_STRATZ_TOKEN。
+按账号缓存到 data/hero_pool/；请求失败时回退旧缓存。
 """
 
 from __future__ import annotations
 
-import asyncio
 import collections
-import json
-import os
 import time
 from pathlib import Path
 
 from nonebot.log import logger
 
 from .. import assets
-from ..config import DATA_DIR, config
-from ..utils import cache_with_fallback, get_http_client, load_cache
-
-GRAPHQL_URL = "https://api.stratz.com/graphql"
+from ..config import DATA_DIR
+from ..utils import cache_with_fallback
+from . import cache, stratz
 
 QUERY = """
 query PlayerHeroPool($id: Long!) {
@@ -48,23 +40,8 @@ CACHE_DIR = DATA_DIR / "hero_pool"
 CACHE_VERSION = 3  # 缓存结构版本（含 position、avatar 字段）；升级后旧缓存自动失效
 
 
-class HeroPoolError(Exception):
+class HeroPoolError(stratz.StratzError):
     """英雄池数据抓取失败（供上层转为用户提示）。"""
-
-
-def _token() -> str:
-    """返回 Stratz Token；未配置时抛 HeroPoolError。"""
-    token = (
-        config.d2w_stratz_token
-        or os.environ.get("D2W_STRATZ_TOKEN")
-        or os.environ.get("STRATZ_TOKEN")
-        or ""
-    ).strip()
-    if not token:
-        raise HeroPoolError(
-            "未配置 Stratz Token，请在 config.json 设置 d2w_stratz_token 或环境变量 D2W_STRATZ_TOKEN"
-        )
-    return token
 
 
 def _cache_path(steam_id, count=25) -> Path:
@@ -77,12 +54,8 @@ def _load_cache(cache_path: Path, key: tuple[int, int], now: float, max_age: flo
 
     max_age 仅用于兼容调用方；当前缓存不设时间限制，传 None 表示永不过期。
     """
-    data = load_cache(cache_path)
-    if data is None:
-        return None
-    if data.get("cache_version") != CACHE_VERSION:
-        return None
-    if data.get("steam_id") != key[0] or data.get("count") != key[1]:
+    data = cache.read(cache_path, CACHE_VERSION, key[0])
+    if data is None or data.get("count") != key[1]:
         return None
     if max_age is not None and now - data.get("fetched_at", 0) > max_age:
         return None
@@ -95,77 +68,16 @@ def _save_cache(
     player_name: str,
     avatar: str,
     matches: list[dict],
-    now: float,
 ) -> None:
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    cache_path.write_text(
-        json.dumps(
-            {
-                "cache_version": CACHE_VERSION,
-                "steam_id": key[0],
-                "count": key[1],
-                "fetched_at": now,
-                "player_name": player_name,
-                "avatar": avatar,
-                "matches": matches,
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
+    cache.write(
+        cache_path,
+        CACHE_VERSION,
+        key[0],
+        count=key[1],
+        player_name=player_name,
+        avatar=avatar,
+        matches=matches,
     )
-
-
-class _RateLimited(Exception):
-    """Stratz 限流（HTTP 429/503），触发退避重试。"""
-
-
-async def _graphql_post(query: str, variables: dict, headers: dict) -> dict:
-    """POST Stratz GraphQL，返回解析后的 JSON。
-
-    api.stratz.com 被 Cloudflare 反爬保护，httpx 等常规客户端会被 403 挑战页拦截，
-    因此优先用插件共享浏览器（真实浏览器 TLS 指纹可正常通过）请求；浏览器不可用时
-    回退到 httpx。
-    """
-    # 浏览器方案
-    try:
-        from ..generators.shared_browser import get_browser
-
-        browser = await get_browser()
-        context = await browser.new_context()
-        try:
-            resp = await context.request.post(
-                GRAPHQL_URL,
-                headers=headers,
-                data=json.dumps({"query": query, "variables": variables}),
-            )
-            status = resp.status
-            if status in (429, 503):
-                raise _RateLimited(status)
-            if status >= 400:
-                body = (await resp.text())[:200]
-                raise HeroPoolError(f"Stratz API 返回 {status}：{body}")
-            return await resp.json()
-        finally:
-            await context.close()
-    except _RateLimited:
-        raise
-    except Exception:
-        pass  # 浏览器方案失败，回退 httpx
-
-    # httpx 兜底
-    client = await get_http_client()
-    resp = await client.post(
-        GRAPHQL_URL,
-        headers=headers,
-        json={"query": query, "variables": variables},
-    )
-    if resp.status_code in (429, 503):
-        raise _RateLimited(resp.status_code)
-    if resp.status_code >= 400:
-        body = resp.text[:200]
-        raise HeroPoolError(f"Stratz API 返回 {resp.status_code}：{body}")
-    return resp.json()
 
 
 def _parse_payload(payload: dict, steam_id) -> tuple[str, str, list[dict]]:
@@ -207,31 +119,20 @@ async def fetch_matches(
         cache_path = _cache_path(steam_id, count)
     key = (int(steam_id), int(count))
     query = QUERY.replace("take: 25", f"take: {int(count)}") if count != 25 else QUERY
-    headers = {
-        "Authorization": f"Bearer {_token()}",
-        "Content-Type": "application/json",
-        "User-Agent": "stratz-hero-pool/0.1",
-    }
+    token = stratz.token(HeroPoolError)
 
     def _load(path):
         return _load_cache(path, key, time.time(), max_age)
 
     async def _fetch():
-        # 先抓 API；对限流(429/503)做退避重试
-        for attempt in range(4):
-            try:
-                payload = await _graphql_post(query, {"id": int(steam_id)}, headers)
-                break
-            except _RateLimited:
-                if attempt < 3:
-                    await asyncio.sleep(15 * (attempt + 1))
-                    continue
-                raise
+        payload = await stratz.query(
+            query, {"id": int(steam_id)}, bearer=token, user_agent="stratz-hero-pool/0.1"
+        )
         player_name, avatar, matches = _parse_payload(payload, steam_id)
 
         # 抓取成功，写回缓存
         try:
-            _save_cache(cache_path, key, player_name, avatar, matches, time.time())
+            _save_cache(cache_path, key, player_name, avatar, matches)
         except Exception as e:
             logger.warning(f"英雄池缓存写入失败：{e}")
         return player_name, avatar, matches

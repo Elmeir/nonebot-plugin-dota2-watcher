@@ -1,22 +1,8 @@
-"""OpenDota 职业选手表：account_id -> 职业名 / 队伍 / 头像 的共享缓存。
+"""OpenDota 职业选手表：account_id -> 职业名 / 队伍 / 头像。
 
-接口：https://api.opendota.com/api/proPlayers（免 Key，一次返回全量 5000+ 条）
-缓存：data/pro_names.json（默认 24 小时，见 CACHE_TTL）
-
-用途（多模块共享同一份缓存，避免重复拉取同一张全量表）：
-  - 战队名单：把 Steam 昵称（玩家自改，如 Ame 当前叫 "NothingToGay"）
-    还原为职业名（"Ame"）；查不到时回退 Steam 昵称；
-  - /pro 指令：统一职业选手的显示名。
-
-字段说明（实测）：
-  account_id   32 位账号 ID，作为索引键
-  name         职业名（如 "Ame"、"Yatoro"）—— 稳定可信
-  personaname  Steam 昵称（会变，仅作兜底）
-  team_name/team_tag   所属战队（滞后，不可用于判定现役）
-  avatarmedium/avatarfull  头像
-  fantasy_role 并非 1-5 号位，而是 fantasy 粗分类（见 ROLE_ORDER），仅用于名单排序
-
-注意：查不到记录不代表不是职业选手（新晋选手尚未收录），调用方应回退到 Steam 昵称。
+接口：https://api.opendota.com/api/proPlayers（免 Key，全量 5000+ 条）。
+缓存：data/pro_names.json，默认 24 小时。
+用于战队名单与 /pro 的显示名；查不到时由调用方回退 Steam 昵称。
 """
 
 from __future__ import annotations
@@ -45,10 +31,7 @@ _KEEP_FIELDS = (
     "fantasy_role",
 )
 
-# fantasy_role 的实测含义与排序权重（核心 -> 中单 -> 辅助 -> 其他）：
-#   实测并非 1-5 号位：role=1 的样例均为 1/3 号位核心（Ame/Yatoro/33/DM），
-#   role=4 清一色中单（Dendi/Topson/Miracle-/Larl），role=2 均为 4/5 号位辅助
-#   （GH/XinQ/Sneyking/Cr1t-/Puppey）；0/3/None 多为无名或未收录选手。
+# fantasy_role 的排序权重（0/3 多为未收录选手）
 ROLE_ORDER = {1: 0, 4: 1, 2: 2}
 ROLE_UNKNOWN = 3  # 0 / 3 / None 及未收录值统一沉底
 

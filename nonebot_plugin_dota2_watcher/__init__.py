@@ -1,18 +1,6 @@
-"""DOTA2 观察者 NoneBot2 插件。
+"""DOTA2 观察者插件。
 
-功能：开黑战报、订阅玩家比赛播报、TI 赛事监听、DOTA2 新闻监听、
-D2PT 位置数据、核心出装图片、TI 战报图片。
-
-配置（环境变量 / NoneBot 配置项，均以 D2W_ 前缀）：
-    D2W_STEAM_API_KEY   Steam Web API Key，用于拉取玩家比赛历史
-    D2W_PROXIES         代理，如 {"http": "...", "https": "..."}
-    D2W_TIMEOUT         网络超时（秒），默认 20
-    D2W_GAME_MODE       不播报的游戏模式，默认 [15, 19]
-    D2W_GROUP_MODE      群组生效模式：all / whitelist / blacklist，默认 all
-    D2W_GROUP_WHITELIST 白名单群号列表，如 [123456789]
-    D2W_GROUP_BLACKLIST 黑名单群号列表，如 [123456789]
-    D2W_XIAOHEIHE_FALLBACK_ENABLED 战绩被隐藏时是否回退小黑盒，默认 True
-    D2W_HIDDEN_FALLBACK_THRESHOLD  连续隐藏多少次后才回退小黑盒，默认 10
+配置项与默认值见 config.py，使用说明见 README.md。
 """
 
 from nonebot import get_driver, require

@@ -1,8 +1,6 @@
-"""开黑战报：一句话锐评生成 + 战报图片调度。
+"""开黑战报：生成一句话锐评并调度战报图片。
 
-文字战报只保留一句阴阳怪气（锐评），详细数据一律由战报图片承载，
-因此这里不再拼接开始时间 / KDA / 补刀等明细文本。
-锐评的多维度判定与语句库见 generators/roast.py 与 dota_dicts.ROAST_LINES。
+锐评规则见 generators/roast.py，语句见 dota_dicts.ROAST_LINES。
 """
 
 import asyncio

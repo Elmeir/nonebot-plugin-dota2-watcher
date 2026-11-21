@@ -1,22 +1,10 @@
-"""插件统一图片素材管理。
+"""统一图片素材管理：目录、下载、缩放与 data URI 编码。
 
-所有图片的落盘位置、下载、缩放与 data URI 编码都集中在本模块；生成器只说明
-「要哪一类素材」，不再各自拼接目录、各自实现取图与编码，避免同一张图被写到
-不同位置、或被不同模块按不同规则复用。
+目录位于 ``config.IMAGES_DIR`` 下，均为可再生缓存：
 
-目录约定（均位于 ``config.IMAGES_DIR`` 下，全部是可再生的缓存）：
+    hero/ item/ abilities/ icons/ avatars/ logo/ rank/ other/
 
-    hero/       英雄宽幅图 ``hero_<short>.png``（战报 / 战绩图）
-    item/       物品图标 ``item_<name>.png``
-    abilities/  技能图标 ``<ability>.png``
-    icons/      英雄小头像 ``<short>_stratz.webp``（Stratz CDN）与 ``<short>_stratz_32_v3.png``（裁边居中后）
-    avatars/    玩家 steam 头像 ``avatar_<url md5>.png``（按 URL 复用，跨数据源）
-    logo/       战队 logo ``<team_id>.png``（TI 战报）
-    rank/       段位徽章 ``rank_<url md5>.png``（小黑盒下发的段位原图）
-    other/      杂项素材（logo_dire、rank_icon_N、scepter_N、pro_badge 等）
-
-历史版本曾把 other/ 中的素材直接放在 ``images/`` 根目录；``image_path()`` 在
-新路径不存在时会继续命中旧文件，升级后无需重新下载。
+旧版本放在 ``images/`` 根目录的素材仍可命中（见 ``image_path``）。
 """
 
 from __future__ import annotations
@@ -220,8 +208,7 @@ def fit_max_height(img, max_h: int):
 # ============================================================
 # 取图：本地文件（进程内缓存）
 # ============================================================
-# 素材在一次渲染里会被反复取用，跨渲染也高度重复；缓存已解码的副本既省掉重复
-# 解码，也避免调用方就地修改时互相污染。
+# 已解码图片的内存缓存；返回副本，避免调用方修改互相污染
 _IMAGE_CACHE: dict[str, object] = {}
 _IMAGE_CACHE_MAX = 2048  # 超出后整体清空，避免异常数据把内存撑爆
 
@@ -470,10 +457,9 @@ async def ensure_hero_image(short: str) -> str:
 
 
 # ============================================================
-# 职业选手认证徽章（战报与 /战绩 共用同一份素材）
+# 职业选手认证徽章（战报与 /战绩 共用）
 # ============================================================
-# 透明 PNG：金色圆 + 白色对勾（上游 d2pt_bot 仓库 images/pro_badge.png）。
-# 两个生成器都要用，因此落盘位置与下载逻辑放在这里统一管理，避免各存一份。
+# 透明 PNG：金色圆 + 白色对勾，下载与路径统一在此管理
 PRO_BADGE_NAME = "pro_badge.png"
 PRO_BADGE_URL = f"{D2PT_REPO_BASE}/images/pro_badge.png"
 

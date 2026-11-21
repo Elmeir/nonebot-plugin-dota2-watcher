@@ -1,212 +1,164 @@
 # DOTA2 Watcher
 
-基于 [NoneBot2](https://nonebot.dev/) 的 DOTA2 观察者插件，为 QQ 群提供开黑战报、玩家比赛播报、TI 赛事监听、DOTA2 新闻推送与 D2PT 出装等能力。
+基于 [NoneBot2](https://nonebot.dev/) 的 DOTA2 QQ 群插件：开黑战报、比赛播报、新闻 / TI / 战队名单订阅，以及 D2PT 出装与玩家数据图片。
 
-## 功能特性
+## 功能
 
-- **开黑战报**：输入比赛编号，生成包含对局详情与 MVP 评分的战报图片（基于 OpenDota）。
-- **玩家比赛播报**：添加 / 查看 / 删除订阅玩家，自动轮询其最新比赛，推送战报图片，并为同局**每位订阅玩家各配一句阴阳怪气锐评**（按补刀、输出、参团、阵亡、人头、连胜连败、英雄梗、时长等维度加权随机判定，每句都写明本局胜负；语句见 `dota_dicts.ROAST_LINES`，英雄梗见 `dota_dicts.HERO_MEMES`）。同局多人抽中同一维度时合并成一句一起说；连胜 / 连败的场数是跨局的，同一批人一起开黑时场数相同才合并，场数不同则各说各的。**战绩被隐藏**（Steam 返回 `status 15`）的玩家，连续失败达到阈值后会回退小黑盒取最近比赛（小黑盒对这类玩家仍会下发匿名比赛列表），并改用小黑盒比赛详情接口生成战报；两个数据源按比赛 ID 大小判重，避免小黑盒数据滞后导致倒序播报旧比赛。
-- **新闻推送**：DOTA2 官方新闻出现新头条时自动向群广播。
-- **TI 赛事**：定时拉取 TI 赛果并推送，支持 `/ti` 查看实时战报图片。
-- **D2PT 出装**：`/d2pt` 生成五位置总览图（每列前 15），`/d2pt [位置1-5]` 生成该位置全部英雄排行图（含英雄图标 / 胜率 / 线优），以及指定英雄的核心出装图片（支持明暗主题）。
-- **英雄池**：通过 Stratz 数据生成玩家最近比赛的英雄池环形图（含出场占比与位置占比内环）。
-- **最近战绩**：通过小黑盒公开接口生成玩家战绩图（玩家卡 / 近20场胜负条 / 比赛列表 / 常用英雄 / 生涯纪录），数据与图片各缓存 1 小时。
-- **播报开关**：按群 / 按玩家开启或关闭播报（昵称填「全体」可一次控制全部）。
-- **战队名单订阅**：订阅战队后，其登记名单出现成员加入 / 离开时自动播报（数据来自 Valve 官方接口）。
-- **群组过滤**：支持白名单 / 黑名单模式，控制插件仅在指定群内生效（指令与播报均受限）。
+- **开黑战报**：按比赛编号生成战报图片，并给每位订阅玩家一句锐评。
+- **比赛播报**：轮询订阅玩家的新比赛，推送战报图片；战绩被隐藏时可按阈值回退小黑盒。
+- **新闻 / TI / 战队名单**：定时检查官方新闻、TI 赛果与战队登记名单，有变化时播报。
+- **D2PT 出装**：`/d2pt` 生成五位置总览或单位置排行，`/出装` 生成指定英雄核心出装。
+- **玩家数据**：`/英雄池`、`/pro`、`/开黑`、`/战绩` 生成对应图片。
+- **订阅管理**：按群 / 玩家开关播报，支持白名单 / 黑名单。
 
 ## 安装
 
-本插件基于 NoneBot2 + OneBot v11 适配器，请先部署好 NoneBot2 运行环境（Python >= 3.10）。
+需要 NoneBot2 + OneBot v11（Python >= 3.10）。
 
 ```bash
-# 1. 安装 NoneBot2 与 OneBot v11 适配器
 pip install nonebot2 nonebot-adapter-onebot
-
-# 2. 安装本插件依赖
 pip install httpx Pillow fonttools playwright
-
-# 3. 安装 NoneBot 插件
 nb plugin install nonebot-plugin-apscheduler
 nb plugin install nonebot-plugin-localstore
-
-# 4. 将本插件目录放入 NoneBot2 项目的 plugins/ 目录
+python -m playwright install chromium
 ```
 
-> 本插件使用 Playwright 渲染部分页面，请额外安装浏览器内核：
->
-> ```bash
-> python -m playwright install chromium
-> ```
-
-在 NoneBot2 的 `pyproject.toml`（或机器人的 `bot.py`）中加载插件：
+将 `nonebot_plugin_dota2_watcher` 放入 NoneBot2 项目的 plugins 目录，或在 `bot.py` 中加载：
 
 ```python
-# bot.py
-import nonebot
-from nonebot.adapters.onebot.v11 import Adapter
-
-nonebot.init()
-driver = nonebot.get_driver()
-driver.register_adapter(Adapter)
-nonebot.load_plugin("nonebot_plugin_dota2_watcher")  # 或使用 plugins 目录自动加载
-nonebot.run()
+nonebot.load_plugin("nonebot_plugin_dota2_watcher")
 ```
 
 ## 配置
 
-所有配置项的默认值保存在 [`nonebot_plugin_dota2_watcher/config.py`](nonebot_plugin_dota2_watcher/config.py)（请勿直接修改，升级会被覆盖）。用户配置的优先级为：**数据目录下的 `config.json`（首次运行自动生成）> `.env` / 环境变量 > 默认值**。启动机器人一次后，即可在 `<数据目录>/config.json` 中直接编辑全部配置项。
+默认值见 [`nonebot_plugin_dota2_watcher/config.py`](nonebot_plugin_dota2_watcher/config.py)。优先级：数据目录下的 `config.json`（首次运行自动生成）> `.env` / 环境变量 > 默认值。
 
-| 环境变量                           | 说明                                                                           | 默认值        |
-| ------------------------------ | ---------------------------------------------------------------------------- | ---------- |
-| **API 密钥**                    |                                                                              |            |
-| `D2W_STEAM_API_KEY`            | Steam Web API Key（用于拉取玩家比赛历史），[申请地址](https://steamcommunity.com/dev/apikey)  | 空          |
-| `D2W_TI_STEAM_API_KEY`         | TI 赛事 / 实时单局使用的独立 API Key，留空时复用上面的 Key                                       | 空          |
-| `D2W_STRATZ_TOKEN`             | Stratz GraphQL API Token（`/英雄池` 使用），[申请地址](https://stratz.com/api)           | 空          |
-| **网络**                        |                                                                              |            |
-| `D2W_PROXIES`                  | 网络代理，如 `{"http": "http://127.0.0.1:7890", "https": "http://127.0.0.1:7890"}` | `{}`       |
-| `D2W_TIMEOUT`                  | 网络请求超时（秒）                                                                    | `20`       |
-| `D2W_DOWNLOAD_TIMEOUT`         | 下载超时（秒）                                                                      | `60`       |
-| `D2W_GH_PROXY`                 | GitHub 加速前缀（国内访问 GitHub raw 资源时使用，可替换为其它代理）                                | `https://gh-proxy.com` |
-| **群组过滤**                     |                                                                              |            |
-| `D2W_GROUP_MODE`               | 群组生效模式：`all`（所有群生效）/ `whitelist`（仅白名单群生效）/ `blacklist`（黑名单群不生效）          | `all`      |
-| `D2W_GROUP_WHITELIST`          | 白名单群号列表，如 `[123456789, 987654321]`，仅 `whitelist` 模式生效                       | `[]`       |
-| `D2W_GROUP_BLACKLIST`          | 黑名单群号列表，仅 `blacklist` 模式生效；范围外的群不响应任何指令、也不接收播报                          | `[]`       |
-| **播报与内容**                   |                                                                              |            |
-| `D2W_ALL_NICKNAME`             | “全体”播报的昵称关键字                                                                 | `全体`       |
-| `D2W_GAME_MODE`                | 不播报的游戏模式列表                                                                   | `[15, 19]` |
-| `D2W_BENCHMARK_THRESHOLD`      | 锐评正负倾向判定阈值（0\~1，小黑盒综合分 / OpenDota benchmark 可用时生效）              | `0.5`      |
-| **图片风格**                     |                                                                              |            |
-| `D2W_IMAGE_THEME`              | 图片生成风格统一默认值：`light`（亮色）/ `dark`（暗色）；作用于 `/出装`、`/开黑`、`/英雄池`、`/战绩`，命令上的 `dark\|light` 参数可临时覆盖 | `light`    |
-| **定时任务**                     |                                                                              |            |
-| `D2W_TI_ENABLED`               | TI 赛事定时任务总开关；设为 `false` 时完全不注册、不轮询，零性能开销（彻底关闭）                            | `false`    |
-| `D2W_NEWS_ENABLED`             | 官方新闻定时任务总开关；设为 `false` 时完全不注册、不轮询，零性能开销（彻底关闭）                            | `true`     |
-| `D2W_ROSTER_ENABLED`           | 战队名单变动定时任务总开关；未配置 Steam Key 时即使开启也不发起请求                                    | `true`     |
-| `D2W_TI_POLL_INTERVAL`         | TI 赛果轮询间隔（秒）                                                                 | `10`       |
-| `D2W_NEWS_POLL_INTERVAL`       | 新闻轮询间隔（秒）                                                                    | `60`       |
-| `D2W_MATCH_POLL_INTERVAL`      | 玩家比赛轮询间隔（秒）                                                                  | `60`       |
-| `D2W_ROSTER_POLL_INTERVAL`     | 战队名单变动轮询间隔（秒，默认 6 小时）                                                       | `21600`    |
-| `D2W_HISTORY_CONCURRENCY`     | 拉取玩家比赛历史的并发上限（避免触发 Steam 限流）                                        | `3`        |
-| `D2W_XIAOHEIHE_FALLBACK_ENABLED` | 战绩被隐藏（Steam `status 15`）时是否回退小黑盒取最近比赛；设为 `false` 则直接跳过，完全不访问小黑盒 | `true` |
-| `D2W_HIDDEN_FALLBACK_THRESHOLD` | 连续「战绩被隐藏」多少次后才回退小黑盒（每次回退尝试后计数归零，用于控制访问频率、规避风控） | `10` |
-| **缓存**                        |                                                                              |            |
-| `D2W_CACHE_EXPIRE_SECONDS`     | D2PT / 玩家数据缓存时长（秒）                                                           | `10800`    |
-| `D2W_CORE_BUILD_CACHE_SECONDS` | 核心出装数据缓存时长（秒）                                                                | `86400`    |
-| `D2W_CORE_BUILD_IMAGE_CACHE_SECONDS` | 核心出装生成图片缓存时长（秒）                                                   | `43200`    |
-| `D2W_XIAOHEIHE_CACHE_SECONDS`  | `/战绩` 数据与生成图片的缓存时长（秒）；战绩时效性强，默认 1 小时                            | `3600`     |
-
-> 运行期数据与缓存目录由 [nonebot-plugin-localstore](https://github.com/nonebot/plugin-localstore) 统一管理，默认写入系统用户数据目录；如需自定义，可设置 `LOCALSTORE_DATA_DIR` / `LOCALSTORE_CACHE_DIR`。
+| 环境变量 | 说明 | 默认值 |
+| --- | --- | --- |
+| `D2W_STEAM_API_KEY` | Steam Web API Key，用于比赛历史（[申请](https://steamcommunity.com/dev/apikey)） | 空 |
+| `D2W_TI_STEAM_API_KEY` | TI 赛事专用 Key，留空复用上方 | 空 |
+| `D2W_STRATZ_TOKEN` | Stratz Token，`/英雄池` 等使用（[申请](https://stratz.com/api)） | 空 |
+| `D2W_PROXIES` | 网络代理，如 `{"http": "http://127.0.0.1:7890"}` | `{}` |
+| `D2W_TIMEOUT` | 请求超时（秒） | `20` |
+| `D2W_DOWNLOAD_TIMEOUT` | 下载超时（秒） | `60` |
+| `D2W_GH_PROXY` | GitHub 加速前缀 | `https://gh-proxy.com` |
+| `D2W_GROUP_MODE` | 群组模式：`all` / `whitelist` / `blacklist` | `all` |
+| `D2W_GROUP_WHITELIST` | 白名单群号列表 | `[]` |
+| `D2W_GROUP_BLACKLIST` | 黑名单群号列表 | `[]` |
+| `D2W_ALL_NICKNAME` | “全体”播报的昵称关键字 | `全体` |
+| `D2W_GAME_MODE` | 不播报的游戏模式 | `[15, 19]` |
+| `D2W_BENCHMARK_THRESHOLD` | 锐评正负倾向阈值（0~1） | `0.5` |
+| `D2W_IMAGE_THEME` | 图片默认风格：`light` / `dark` | `light` |
+| `D2W_TI_ENABLED` | TI 定时任务开关 | `false` |
+| `D2W_NEWS_ENABLED` | 新闻定时任务开关 | `true` |
+| `D2W_ROSTER_ENABLED` | 战队名单定时任务开关 | `true` |
+| `D2W_TI_POLL_INTERVAL` | TI 轮询间隔（秒） | `10` |
+| `D2W_NEWS_POLL_INTERVAL` | 新闻轮询间隔（秒） | `60` |
+| `D2W_MATCH_POLL_INTERVAL` | 比赛轮询间隔（秒） | `60` |
+| `D2W_ROSTER_POLL_INTERVAL` | 战队名单轮询间隔（秒） | `21600` |
+| `D2W_HISTORY_CONCURRENCY` | 比赛历史拉取并发上限 | `3` |
+| `D2W_XIAOHEIHE_FALLBACK_ENABLED` | 战绩被隐藏时是否回退小黑盒 | `true` |
+| `D2W_HIDDEN_FALLBACK_THRESHOLD` | 连续隐藏多少次后回退小黑盒 | `10` |
+| `D2W_CACHE_EXPIRE_SECONDS` | D2PT / 玩家数据缓存（秒） | `10800` |
+| `D2W_CORE_BUILD_CACHE_SECONDS` | 核心出装数据缓存（秒） | `86400` |
+| `D2W_CORE_BUILD_IMAGE_CACHE_SECONDS` | 核心出装图片缓存（秒） | `43200` |
+| `D2W_XIAOHEIHE_CACHE_SECONDS` | `/战绩` 数据与图片缓存（秒） | `3600` |
 
 示例 `.env`：
 
 ```dotenv
 D2W_STEAM_API_KEY=你的Steam_Web_API_Key
 D2W_PROXIES={"http": "http://127.0.0.1:7890", "https": "http://127.0.0.1:7890"}
-D2W_GH_PROXY=https://gh-proxy.com
-D2W_TIMEOUT=20
-D2W_TI_ENABLED=false      # 可选：TI 赛事定时任务总开关（默认已关闭），设 true 开启
-D2W_NEWS_ENABLED=true     # 可选：官方新闻定时任务总开关，设 false 彻底关闭以省性能
-D2W_GROUP_MODE=all        # 可选：群组生效模式 all / whitelist / blacklist，配合下面的白/黑名单列表使用
-D2W_IMAGE_THEME=light     # 可选：图片生成风格统一默认值 light / dark（/出装、/开黑、/英雄池、/战绩）
-LOCALSTORE_DATA_DIR=./data     # 可选：数据目录（订阅信息、持久缓存）
-LOCALSTORE_CACHE_DIR=./cache   # 可选：图片/战报等可再生缓存目录
+D2W_GROUP_MODE=all
+D2W_IMAGE_THEME=light
+LOCALSTORE_DATA_DIR=./data
+LOCALSTORE_CACHE_DIR=./cache
 ```
 
-### 定时任务行为
+运行期数据与缓存由 [nonebot-plugin-localstore](https://github.com/nonebot/plugin-localstore) 管理；`LOCALSTORE_DATA_DIR` / `LOCALSTORE_CACHE_DIR` 可覆盖目录。
 
-新闻 / 新比赛 / 战队名单 / TI 赛果这几个定时任务**互不叠加**：到点时若上一轮还没跑完，这一轮直接跳过（日志为 `DEBUG` 级），因此不会并发执行，也不会再出现 `maximum number of running instances reached` 警告。
+## 命令
 
-- 单轮最长 15 分钟，超时会被取消并输出一条 `[WARNING]`，下一轮照常开始；
-- 每次向 OneBot 后端发送消息最多等待 60 秒（适配器自身的 `API_TIMEOUT` 仍生效），协议端假死时不会把整轮轮询一直挂住；
-- 若日志里反复出现超时告警，说明数据源或协议端响应过慢，可检查 `D2W_TIMEOUT`、`D2W_PROXIES` 与 OneBot 连接。
+| 命令 | 说明 | 权限 |
+| --- | --- | --- |
+| `/添加刀塔玩家 [昵称] [steam_id]` | 订阅玩家，新比赛自动播报 | 任意 |
+| `/查看刀塔玩家` | 查看本群订阅玩家 | 任意 |
+| `/删除刀塔玩家 [昵称]` | 删除订阅 | 管理员 |
+| `开启/关闭[昵称]的群播报` | 开关玩家播报（“全体”= 全部） | 任意 |
+| `/d2pt [位置1-5] [dark\|light]` | 排行图：不带位置为总览，带位置为该位置全部英雄 | 任意 |
+| `/战报 [比赛编号]` | 开黑战报图片 | 任意 |
+| `/出装 [英雄名] [位置1-5] [dark\|light]` | 核心出装图片 | 任意 |
+| `/ti [小组赛\|正赛]` | TI 战报图片（默认最新阶段） | 任意 |
+| `/英雄池 [steam_id 或昵称] [min\|mid\|max]` | 英雄池环形图（默认 `min`，25 场） | 任意 |
+| `/pro [steam_id 或昵称] [dark\|light]` | 与职业选手的对战记录图（前 10） | 任意 |
+| `/开黑 [steam_id 或昵称] [dark\|light]` | 最常一起开黑的队友图（前 20） | 任意 |
+| `/战绩 [steam_id 或昵称] [dark\|light]` | 小黑盒最近战绩图 | 任意 |
+| `/添加刀塔战队 [队名或 team_id 或 CN]` | 订阅名单变动，`CN` 为全部中国战队 | 任意 |
+| `/查看刀塔战队` | 查看本群订阅战队 | 任意 |
+| `/删除刀塔战队 [队名或 team_id 或 CN]` | 取消订阅 | 管理员 |
+| `/战队 [队名或 team_id 或 CN]` | 查询战队当前登记名单 | 任意 |
+| `/订阅 [新闻\|ti] [开\|关]` | 查看或设置订阅 | 管理员 |
 
-## 使用方法
+补充：
 
-在群内发送以下命令（`/` 前缀命令需确保机器人已启用命令前缀）：
-
-| 命令                                | 说明                       | 权限  |
-| --------------------------------- | ------------------------ | --- |
-| `/添加刀塔玩家 [昵称] [steam的id]`         | 订阅玩家，新比赛自动播报             | 任意  |
-| `/查看刀塔玩家`                         | 查看本群已订阅玩家列表              | 任意  |
-| `/删除刀塔玩家 [昵称]`                    | 删除本群指定玩家                 | 管理员 |
-| `开启[昵称]的群播报`                      | 开启某玩家的播报（昵称填“全体”可一次控制全部） | 任意  |
-| `关闭[昵称]的群播报`                      | 关闭某玩家的播报                 | 任意  |
-| `/d2pt [位置1-5] [dark\|light]`      | 生成 D2PT 排行图片（不带位置=五列总览，带位置=该位置全部英雄） | 任意  |
-| `/战报 [比赛编号]`                      | 生成开黑战报图片                 | 任意  |
-| `/出装 [英雄名] [位置1-5] [dark\|light]` | 生成核心出装图片                 | 任意  |
-| `/ti [小组赛\|正赛]`                  | 查看 TI 赛事战报图片（默认自动判断最新阶段） | 任意  |
-| `/英雄池 [steam_id 或 玩家昵称] [min\|mid\|max 或 小\|中\|大]` | 生成玩家英雄池环形图（数量档位可选，默认 min/25 场；风格随 `D2W_IMAGE_THEME`） | 任意  |
-| `/添加刀塔战队 [队名或 team_id 或 CN]`   | 订阅战队，其登记名单变动（成员加入 / 离开）时自动播报；`CN` 一键订阅全部中国战队 | 任意  |
-| `/查看刀塔战队`                   | 查看本群已订阅战队列表                              | 任意  |
-| `/删除刀塔战队 [队名或 team_id 或 CN]`   | 删除本群指定战队订阅；`CN` 一键取消全部中国战队                               | 管理员 |
-| `/战队 [队名或 team_id 或 CN]`   | 查询战队当前登记名单（显示职业名；`CN` 返回全部中国战队，每队一行）    | 任意  |
-| `/pro [steam_id 或 玩家昵称] [dark\|light]` | 生成与职业选手的队友/对手对战记录图（Stratz + OpenDota 互补，Liquipedia 校验，展示前 10 条） | 任意  |
-| `/开黑 [steam_id 或 玩家昵称] [dark\|light]` | 生成最常一起开黑的队友记录图（Stratz 同队聚合，按共同场次降序取前 20，含场次与胜率） | 任意  |
-| `/战绩 [steam_id 或 玩家昵称] [dark\|light]` | 生成小黑盒最近战绩图（玩家卡 / 近20场胜负条 / 比赛列表 / 常用英雄 / 生涯纪录），数据与图片各缓存 1 小时 | 任意  |
-| `/订阅`                            | 查看订阅状态（全局总开关与本群开关）        | 管理员 |
-| `/订阅 新闻 [开\|关]`                 | 切换或指定开、关官方新闻订阅并展示状态       | 管理员 |
-| `/订阅 ti [开\|关]`                   | 切换或指定开、关 TI 赛事订阅并展示状态      | 管理员 |
-
-> 示例：`/添加刀塔玩家 萧瑟先辈 898754153`、`/出装 敌法师 1 dark`、`/战报 1000000000`、`/英雄池 277774684`。
->
-> 图片风格统一由配置项 `D2W_IMAGE_THEME` 决定（默认 `light` 亮色），作用于 `/出装`、`/开黑`、`/英雄池`、`/战绩`；`/出装`、`/开黑`、`/战绩` 命令末尾的 `dark|light` 参数可临时覆盖该默认值。
->
-> 战队订阅支持队名、官方缩写或 team_id：`/添加刀塔战队 XG`、`/添加刀塔战队 Team Liquid`、`/添加刀塔战队 8261500` 均可；`/添加刀塔战队 CN` 一键订阅全部中国战队，对应地 `/删除刀塔战队 CN` 一键取消全部中国战队。
-> 名单来自 Valve 客户端登记值（含替补/教练，且存在跨队残留，"离开"播报可能滞后），首次订阅只建立基线不补播历史。
->
-> 战绩被隐藏（隐私资料）的玩家默认仍可播报：连续 10 次取不到 Steam 比赛历史后，会改从小黑盒 overview 取最近比赛，并**只用小黑盒比赛详情接口**生成战报（这类玩家在 OpenDota 里是匿名的，无法定位到本人）。回退拉到的 overview 数据会按 `D2W_XIAOHEIHE_CACHE_SECONDS` 缓存，随后 `/战绩` 直接复用。小黑盒数据可能滞后，因此比赛 ID 必须比已知最新 ID 更大才会播报，避免重复或倒序。若不想访问小黑盒，可设 `D2W_XIAOHEIHE_FALLBACK_ENABLED=false`。
+- 图片风格由 `D2W_IMAGE_THEME` 统一控制，作用于 `/d2pt`、`/出装`、`/英雄池`、`/pro`、`/开黑`、`/战绩`；其中 `/d2pt`、`/出装`、`/pro`、`/开黑`、`/战绩` 可用命令末尾的 `dark|light` 临时覆盖。
+- 定时任务不叠加：上一轮未结束则跳过。单轮超过 15 分钟取消并告警，单次发送最多等待 60 秒。
+- 战绩被隐藏（Steam `status 15`）的玩家累计达到阈值后，改从小黑盒取最近比赛，并用小黑盒详情生成战报；比赛 ID 必须大于已知最新值才播报。
+- 战队名单来自 Valve 客户端登记值，含替补 / 教练，可能存在跨队残留；首次订阅只建立基线，不补播历史。
 
 ## 目录结构
 
-```
-nonebot_plugin_dota2_watcher/     # 插件包
+```text
+nonebot_plugin_dota2_watcher/
 ├── __init__.py              # 插件入口与元数据
-├── config.py                # 插件配置
-├── utils.py                 # 网络请求与通用工具
-├── assets.py                # 图片素材统一管理（目录 / 下载 / 缩放 / data URI 缓存）
-├── dota_dicts.py            # DOTA2 静态字典（含锐评语句库 ROAST_LINES）
-├── hero_nicknames.py        # 英雄昵称映射
-├── handlers/                # NoneBot 交互层
+├── config.py                # 配置与运行期目录
+├── utils.py                 # HTTP / 缓存 / 并发工具
+├── assets.py                # 图片素材管理
+├── dota_dicts.py            # 静态字典与锐评语句
+├── hero_nicknames.py        # 英雄昵称
+├── handlers/
 │   ├── commands.py          # 命令处理器
-│   └── scheduler.py         # 定时任务（TI / 新闻 / 玩家比赛轮询）
-├── services/                # 业务逻辑层
-│   ├── service.py           # 命令与定时任务共用的业务函数
-│   ├── match_history.py     # 最近比赛获取（Steam 优先，隐藏时门控回退小黑盒）
+│   └── scheduler.py         # 定时任务
+├── services/
+│   ├── service.py           # 业务编排
+│   ├── broadcast.py         # 群播报
+│   ├── news.py              # 新闻监听与去重
+│   ├── match_history.py     # 最近比赛获取（含小黑盒回退）
 │   ├── store.py             # 订阅数据存储
 │   └── player.py            # 玩家数据模型
-├── datasources/             # 外部数据源
-│   ├── request_match.py     # Steam / OpenDota 请求（按比赛 ID 来源选详情接口）
+├── datasources/
+│   ├── stratz.py            # Stratz GraphQL 传输层
+│   ├── stratz_peers.py      # peers 查询参数与解析
+│   ├── cache.py             # 版本化 JSON 缓存
+│   ├── request_match.py     # Steam / OpenDota 比赛详情
+│   ├── hero_pool.py         # 英雄池
+│   ├── playmates.py         # 开黑记录
+│   ├── pro_peers.py         # 职业选手对战记录
+│   ├── pro_names.py         # 职业选手表
 │   ├── d2pt.py              # D2PT 数据
-│   ├── xiaoheihe.py         # 小黑盒比赛数据源（OpenDota 兜底）
-│   ├── xiaoheihe_overview.py # 小黑盒玩家战绩总览（/战绩，免签名）
-│   ├── ti_results.py        # TI 赛果
-│   ├── pro_peers.py         # 职业选手对战记录（Stratz）
-│   ├── playmates.py         # 开黑记录（Stratz 同队队友聚合）
-│   ├── hero_pool.py         # Stratz 英雄池数据
-│   ├── team_roster.py       # Valve 战队登记名单（成员加入/离开检测）
-│   └── pro_names.py         # OpenDota 职业选手表共享缓存（职业名）
-├── generators/              # 图片 / 文本生成
-│   ├── core_build.py        # 核心出装图生成
-│   ├── d2pt_ranking.py      # D2PT 五位置排行图生成
-│   ├── match_builder.py     # 开黑战报生成（一句话锐评 + 图片调度）
-│   ├── roast.py             # 阴阳怪气（锐评）多维度判定与加权随机
-│   ├── match_report.py      # 战报图片绘制
-│   ├── hero_pool.py         # 英雄池环形图生成
-│   ├── playmates.py         # 开黑记录图生成
-│   ├── pro_peers.py         # 职业选手对战记录图生成
-│   ├── xiaoheihe_overview.py # 小黑盒最近战绩图生成（/战绩）
-│   └── shared_browser.py    # 共享 Playwright 浏览器
+│   ├── xiaoheihe.py         # 小黑盒比赛详情
+│   ├── xiaoheihe_overview.py # 小黑盒战绩总览
+│   ├── team_roster.py       # 战队登记名单
+│   └── ti_results.py        # TI 赛果
+└── generators/
+    ├── core_build.py        # 核心出装图
+    ├── d2pt_ranking.py      # D2PT 排行图
+    ├── match_builder.py     # 战报文本与图片调度
+    ├── match_report.py      # 战报图片
+    ├── roast.py             # 锐评判定
+    ├── hero_pool.py         # 英雄池环形图
+    ├── playmates.py         # 开黑记录图
+    ├── pro_peers.py         # 职业选手对战记录图
+    ├── xiaoheihe_overview.py # 战绩图
+    ├── html_render.py       # HTML → PNG 渲染
+    └── shared_browser.py    # 共享 Playwright 浏览器
 ```
 
-> 图片素材统一由 `assets.py` 管理：英雄宽图 `images/hero/`、物品 `images/item/`、
-> 技能 `images/abilities/`、英雄小头像 `images/icons/`、玩家头像 `images/avatars/`、
-> 战队 logo `images/logo/`、段位徽章 `images/rank/`、杂项 `images/other/`。
-> 各生成器只通过 `assets` 取图，不再自行拼接目录或重复实现下载与 data URI 缓存。
+图片素材统一由 `assets.py` 管理，目录为 `images/` 下的 `hero/`、`item/`、`abilities/`、`icons/`、`avatars/`、`logo/`、`rank/`、`other/`。
 
 ## 致谢
 
 - [NoneBot2](https://nonebot.dev/)
-- [OpenDota](https://www.opendota.com/) / Steam Web API 提供的比赛数据
-- [d2pt\_bot](https://github.com/Elmeir/d2pt_bot) 提供的 D2PT 出装与位置数据
-- [Steam\_watcher](https://github.com/SonodaHanami/Steam_watcher) 提供的战报素材
-
+- [OpenDota](https://www.opendota.com/) / Steam Web API
+- [d2pt_bot](https://github.com/Elmeir/d2pt_bot) 的 D2PT 数据
+- [Steam_watcher](https://github.com/SonodaHanami/Steam_watcher) 的战报素材

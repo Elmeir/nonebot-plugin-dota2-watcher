@@ -7,7 +7,7 @@
 from nonebot import on_command, on_regex
 from nonebot.adapters.onebot.v11 import GroupMessageEvent, MessageSegment
 from nonebot.adapters.onebot.v11.permission import GROUP_ADMIN, GROUP_OWNER
-from nonebot.matcher import Matcher
+from nonebot.params import RegexStr
 from nonebot.permission import SUPERUSER
 from nonebot.rule import Rule
 
@@ -119,15 +119,13 @@ async def handle_delete_player(event: GroupMessageEvent):
 # 播报开关
 # ---------------------------------------------------------------
 @close_broadcast_cmd.handle()
-async def handle_close_broadcast(matcher: Matcher, event: GroupMessageEvent):
-    name = matcher.state["_matched_groups"][0]
+async def handle_close_broadcast(event: GroupMessageEvent, name: str = RegexStr(1)):
     if reply := service.toggle_broadcast(event.group_id, name, display=False):
         await close_broadcast_cmd.finish(reply)
 
 
 @open_broadcast_cmd.handle()
-async def handle_open_broadcast(matcher: Matcher, event: GroupMessageEvent):
-    name = matcher.state["_matched_groups"][0]
+async def handle_open_broadcast(event: GroupMessageEvent, name: str = RegexStr(1)):
     if reply := service.toggle_broadcast(event.group_id, name, display=True):
         await open_broadcast_cmd.finish(reply)
 

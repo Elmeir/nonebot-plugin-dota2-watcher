@@ -87,10 +87,10 @@ def delete_player(group_id, player_name: str) -> str:
 
 
 def toggle_broadcast(group_id, player_name: str, display: bool) -> str:
-    """开启/关闭某玩家（或全体）的播报；返回提示文案（空串表示无需回复）。"""
+    """开启/关闭某玩家（或全体）的播报；返回提示文案。"""
     reply = store.set_display(str(group_id), player_name, display)
     store.save()
-    return reply or ""
+    return reply
 
 
 _ON, _OFF = "开", "关"

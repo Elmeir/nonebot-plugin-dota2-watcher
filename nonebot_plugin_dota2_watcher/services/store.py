@@ -228,8 +228,8 @@ def subscribed_teams(group_filter=None) -> dict[int, list[str]]:
         return result
 
 
-def set_display(gid: str, player_name: str, display: bool) -> str | None:
-    """开启/关闭某玩家（或全体）的播报。返回提示文案；无需回复时返回 None。"""
+def set_display(gid: str, player_name: str, display: bool) -> str:
+    """开启/关闭某玩家（或全体）的播报。返回提示文案。"""
     with _lock:
         data = load()
         if str(gid) not in data:
@@ -240,7 +240,7 @@ def set_display(gid: str, player_name: str, display: bool) -> str | None:
         if player_name == config.d2w_all_nickname:
             for p in players:
                 p.display_recent_match = display
-            return None  # 全体操作不单独回复
+            return f"已{'开启' if display else '关闭'}全体 {len(players)} 名玩家的播报"
         for p in players:
             if p.nickname == player_name:
                 p.display_recent_match = display

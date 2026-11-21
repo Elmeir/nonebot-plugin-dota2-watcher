@@ -49,8 +49,9 @@ async def poll_news() -> None:
         return
     try:
         news = await request_news()
-    except Exception:
-        logger.exception("获取 DOTA2 新闻失败")
+    except Exception as e:
+        # 网络故障是轮询的常态，按 warning 记录单行即可，避免每分钟刷完整堆栈
+        logger.warning(f"获取 DOTA2 新闻失败：{e}")
         return
     events = [e for e in ((news or {}).get("events") or []) if e.get("gid") and e.get("event_name")]
     if not events:

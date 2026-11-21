@@ -9,6 +9,7 @@ from nonebot.rule import Rule
 
 from ..config import is_group_allowed
 from ..services import service
+from ..utils import DOTA2HTTPError
 
 
 def _check_group(event: GroupMessageEvent) -> bool:
@@ -332,7 +333,7 @@ async def handle_roster(event: GroupMessageEvent):
         await roster_cmd.finish("请输入：/战队 [队名或 team_id 或 CN]\n如：/战队 XG、/战队 CN")
     try:
         text = await service.roster_report(args[0])
-    except ValueError as e:
+    except (ValueError, DOTA2HTTPError) as e:
         await roster_cmd.finish(str(e))
     await roster_cmd.finish(text or "未查询到该战队名单")
 

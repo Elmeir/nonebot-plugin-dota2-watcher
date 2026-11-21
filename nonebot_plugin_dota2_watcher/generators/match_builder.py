@@ -58,12 +58,11 @@ async def generate_report_img(
     supplement_anonymous 为 False 时不接入小黑盒补充匿名玩家数据。
     """
     async with _report_lock:
-        try:
-            return await match_report.generate_match_image(
-                match_id,
-                force=force,
-                match_data=match_data,
-                supplement_anonymous=supplement_anonymous,
-            )
-        finally:
-            await match_report.close_session()
+        # 复用进程级共享 httpx 客户端，不在此关闭：关闭会让并发中的
+        # 轮询/其它命令收到「客户端已关闭」的伪网络错误。
+        return await match_report.generate_match_image(
+            match_id,
+            force=force,
+            match_data=match_data,
+            supplement_anonymous=supplement_anonymous,
+        )

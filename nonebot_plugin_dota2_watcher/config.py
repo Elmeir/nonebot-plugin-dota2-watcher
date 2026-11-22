@@ -31,7 +31,7 @@ class Config(BaseModel):
     # 下载超时（秒）
     d2w_download_timeout: int = 60
     # GitHub 加速前缀（国内访问 GitHub raw 资源时使用，可按需替换为其它代理）
-    d2w_gh_proxy: str = "https://gh-proxy.com"
+    d2w_gh_proxy: str = "https://gh-proxy.org"
 
     # ===================== 群组过滤 =====================
     # 群组生效模式：all（所有群生效，默认）/ whitelist（仅白名单群生效）/ blacklist（黑名单群不生效）

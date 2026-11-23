@@ -17,7 +17,7 @@ from ..datasources.request_match import (
     request_match_info,
 )
 from ..datasources.xiaoheihe_overview import OverviewError
-from ..generators import core_build, d2pt_ranking, hero_pool, match_builder
+from ..generators import core_build, d2pt_ranking, hero_pool, match_builder, turbo_ranking
 from ..generators import playmates as playmates_gen
 from ..generators import pro_peers as pro_peers_gen
 from ..generators import xiaoheihe_overview as xiaoheihe_gen
@@ -157,6 +157,34 @@ async def d2pt_report(theme: str | None = None, pos: str | None = None) -> Messa
         return Message(MessageSegment.image(file=path))
 
     return await run_single_flight(("d2pt", pos_key, theme), _build)
+
+
+async def turbo_report(theme: str | None = None) -> Message:
+    """加速模式英雄胜率图片（按胜率降序）。
+
+    theme 留空时使用配置项 d2w_image_theme（默认 light）。
+    """
+    theme = normalize_image_theme(theme)
+
+    async def _build() -> Message:
+        try:
+            data = await d2pt.load_turbo_data()
+        except Exception:
+            logger.exception("加速模式数据加载失败")
+            return Message("加速模式数据读取失败")
+        if not data:
+            return Message("加速模式数据读取失败")
+
+        try:
+            path = await turbo_ranking.generate_image(data, theme=theme)
+        except Exception:
+            logger.exception("加速模式胜率图生成失败")
+            return Message("加速模式图片生成失败")
+        if not path:
+            return Message("加速模式数据读取失败")
+        return Message(MessageSegment.image(file=path))
+
+    return await run_single_flight(("turbo", theme), _build)
 
 
 async def report_image(match_id: str) -> str:

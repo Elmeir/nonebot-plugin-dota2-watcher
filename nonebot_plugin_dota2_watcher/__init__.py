@@ -29,6 +29,7 @@ __plugin_meta__ = PluginMetadata(
         "开启/关闭[昵称]的群播报（昵称为“全体”时一次控制全部）\n"
         "/d2pt：D2PT 五位置总览图片（每列前 15）\n"
         "/d2pt [位置1-5] [dark|light]：该位置全部英雄排行图片\n"
+        "/加速 [dark|light]：加速模式英雄胜率图\n"
         "/战报 [比赛编号]：生成开黑战报图片\n"
         "/出装 [英雄名] [位置1-5] [dark|light]：核心出装图（风格默认见 D2W_IMAGE_THEME）\n"
         "/ti：TI 赛事战报图片\n"

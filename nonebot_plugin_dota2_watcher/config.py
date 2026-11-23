@@ -225,6 +225,7 @@ D2PT_DATA_BASE = f"{D2PT_REPO_BASE}/data"
 # data/ 目录下的数据 JSON
 D2PT_POS_URL = f"{D2PT_DATA_BASE}/d2pt_pos.json"  # D2PT 位置数据（已合并所有位置）
 D2PT_CORE_BUILD_URL = f"{D2PT_DATA_BASE}/d2pt_core_build.json"  # 核心出装数据
+D2PT_TURBO_URL = f"{D2PT_DATA_BASE}/dotabuff_turbo.json"  # 加速模式英雄胜率（Dotabuff）
 D2PT_TALENTS_CN_URL = f"{D2PT_DATA_BASE}/talents_cn.json"  # 天赋中文名
 # 仓库根 images/abilities/ 技能图标
 D2PT_REPO_ICON_BASE = f"{D2PT_REPO_BASE}/images/abilities/"

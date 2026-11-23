@@ -34,6 +34,7 @@ delete_player_cmd = on_command(
 close_broadcast_cmd = on_regex(r"关闭(\S+)的群播报", rule=_group_rule, priority=10, block=True)
 open_broadcast_cmd = on_regex(r"开启(\S+)的群播报", rule=_group_rule, priority=10, block=True)
 d2pt_cmd = on_command("d2pt", aliases={"D2PT"}, rule=_group_rule, priority=10, block=True)
+turbo_cmd = on_command("加速", rule=_group_rule, priority=10, block=True)
 report_cmd = on_command("战报", rule=_group_rule, priority=10, block=True)
 build_cmd = on_command("出装", rule=_group_rule, priority=10, block=True)
 ti_cmd = on_command("ti", aliases={"TI"}, rule=_group_rule, priority=10, block=True)
@@ -172,6 +173,22 @@ async def handle_d2pt(event: GroupMessageEvent):
             await d2pt_cmd.finish(_D2PT_HINT)
 
     await d2pt_cmd.finish(await service.d2pt_report(theme=theme, pos=pos))
+
+
+# ---------------------------------------------------------------
+# /加速：加速模式英雄胜率图
+# ---------------------------------------------------------------
+@turbo_cmd.handle()
+async def handle_turbo(event: GroupMessageEvent):
+    args = _args(event)
+    if len(args) > 1:
+        await turbo_cmd.finish("请输入：/加速 [dark|light]")
+    theme = None
+    if args:
+        theme = args[0].strip().lower()
+        if theme not in ("dark", "light"):
+            await turbo_cmd.finish("风格参数无效，请输入 dark 或 light")
+    await turbo_cmd.finish(await service.turbo_report(theme=theme))
 
 
 # ---------------------------------------------------------------
@@ -382,6 +399,7 @@ _HELP_TEXT = (
     "开启/关闭[昵称]的群播报：控制某玩家（或“全体”）播报\n"
     "/d2pt：D2PT 五位置总览图片（每列前 15）\n"
     "/d2pt [位置1-5] [dark|light]：该位置全部英雄排行图片\n"
+    "/加速 [dark|light]：加速模式胜率 50% 以上英雄图\n"
     "/战报 [比赛编号]：生成开黑战报图片\n"
     "/出装 [英雄名] [位置1-5] [dark|light]：核心出装图\n"
     "/ti [小组赛|正赛]：TI 赛事战报图片（默认最新阶段）\n"

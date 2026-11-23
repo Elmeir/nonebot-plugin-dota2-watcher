@@ -18,6 +18,7 @@ from .core_build import FONT_FAMILY, THEMES
 ROOT_FONT_PX = 19.2  # 1rem 的像素值，与 /d2pt、/出装 一致
 COLUMNS = 5  # 卡片网格列数
 GAP_REM = 0.25  # 卡片之间的间距（rem）
+OUTER_PADDING_REM = 0.6  # 图片最外层留白（rem），避免卡片贴边
 SUPERSAMPLE = 2  # 先按 2x 渲染再缩回，边缘与文字更细腻
 
 # 卡片内部布局尺寸（rem）：用于按最长英雄名计算单格宽度
@@ -108,7 +109,12 @@ def build_html(data: dict, theme_name: str, icons: dict[str, str]) -> str:
     accent = ACCENTS[theme_name]
     heroes = data.get("heroes") or []
     card_width = _card_width_rem(heroes)
-    container_rem = round(COLUMNS * card_width + (COLUMNS - 1) * GAP_REM, 2)
+    container_rem = round(
+        COLUMNS * card_width
+        + (COLUMNS - 1) * GAP_REM
+        + OUTER_PADDING_REM * 2,
+        2,
+    )
     cards = "".join(_card_html(item, theme, icons) for item in heroes)
 
     updated_at = str(data.get("updated_at") or "")
@@ -139,7 +145,9 @@ def build_html(data: dict, theme_name: str, icons: dict[str, str]) -> str:
 </head>
 <body>
 <div id="container" style="display: flex; flex-direction: column; gap: 0.35rem;
-     background-color: {theme["container_bg"]}; width: {container_rem}rem;">
+     background-color: {theme["container_bg"]};
+     padding: {OUTER_PADDING_REM}rem;
+     width: {container_rem}rem;">
   <div style="display: flex; align-items: center; gap: 0.35rem; padding: 0 0.05rem;">
     {_bolt_svg(accent)}
     <span style="font-size: 1.05rem; font-weight: 600; color: {theme["title_color"]};">

@@ -22,6 +22,7 @@ from .hero_pool import THEMES as ICON_THEMES
 ROOT_FONT_PX = 19.2  # 1rem 的像素值，与 /出装、/战绩 一致
 CONTAINER_REM = 46  # 五列总览的容器宽度（rem），按内容收紧，避免线优右侧留白
 SINGLE_CONTAINER_REM = 28  # 单位置图片的容器宽度（rem）
+OUTER_PADDING_REM = 0.6  # 图片最外层留白（rem），避免卡片贴边
 SINGLE_COLUMNS = 3  # 单位置图片的网格列数
 ROWS_PER_POSITION = 15  # 五列总览中每列显示的英雄数上限
 SUPERSAMPLE = 2  # 先按 2x 渲染再缩回，边缘与文字更细腻
@@ -256,7 +257,8 @@ def build_html(
 <body>
 <div id="container" style="display: grid; grid-template-columns: repeat(5, minmax(0, 1fr));
      gap: 0.3rem; background-color: {theme["container_bg"]};
-     width: {CONTAINER_REM}rem;">
+     padding: {OUTER_PADDING_REM}rem;
+     width: {CONTAINER_REM + OUTER_PADDING_REM * 2}rem;">
   {columns}
 </div>
 </body>
@@ -310,7 +312,9 @@ def build_position_html(
 </head>
 <body>
 <div id="container" style="display: flex; flex-direction: column; gap: 0.35rem;
-     background-color: {theme["container_bg"]}; width: {SINGLE_CONTAINER_REM}rem;">
+     background-color: {theme["container_bg"]};
+     padding: {OUTER_PADDING_REM}rem;
+     width: {SINGLE_CONTAINER_REM + OUTER_PADDING_REM * 2}rem;">
   <div style="display: flex; align-items: center; gap: 0.35rem;">
     {icon}
     <span style="font-size: 1.05rem; font-weight: 600; color: {theme["title_color"]};">
